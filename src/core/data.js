@@ -3,6 +3,8 @@
  */
 import { evaluate, evaluateAsync, KNOWN_PATHS, safeString } from '../connection.js';
 import { waitForChartReady } from '../wait.js';
+import { writeFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 const MAX_OHLCV_BARS = 500;
 const MAX_TRADES = 20;
@@ -179,6 +181,94 @@ export async function getOhlcv({ count, summary } = {}) {
   }
 
   return { success: true, bar_count: data.bars.length, total_available: data.total_bars, source: data.source, bars: data.bars };
+}
+
+// Multi-symbol bar fetcher. Drives the live chart symbol-by-symbol, reads bars
+// from the internal mainSeries().bars() model (NOT the gated exportData), and
+// either writes them to disk (out_path — bars never enter the model's context)
+// or returns them inline. Restores the chart's original symbol/resolution when
+// done. Used by the qmomentum-scan skill's Stage-2 bar pull.
+export async function getOhlcvBatch({ symbols, timeframe, count, out_path } = {}) {
+  const syms = (symbols || []).map(s => String(s).trim()).filter(Boolean);
+  if (!syms.length) throw new Error('Pass at least one symbol.');
+  const tf = timeframe || 'D';
+  const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+  const api = CHART_API;
+
+  const readBars = async () => evaluate(`
+    (function() {
+      var bars = ${BARS_PATH};
+      if (!bars || typeof bars.lastIndex !== 'function') return [];
+      var out = [], end = bars.lastIndex();
+      var start = Math.max(bars.firstIndex(), end - ${limit} + 1);
+      for (var i = start; i <= end; i++) {
+        var v = bars.valueAt(i);
+        if (v) out.push([v[0], v[1], v[2], v[3], v[4], v[5] || 0]);
+      }
+      return out;
+    })()
+  `);
+
+  // Confirm the switch from the real API, not the DOM: TradingView rewrites the
+  // exchange prefix (setSymbol("AAPL") → api.symbol() "BATS:AAPL") and the legend
+  // DOM node isn't reliably present under CDP, so we match on the ticker (part
+  // after ":") and wait for the internal bar count to settle across two polls.
+  const tickerOf = (s) => String(s).split(':').pop().toUpperCase();
+  const waitReady = async (sym, timeoutMs = 9000) => {
+    const want = tickerOf(sym);
+    const start = Date.now();
+    let last = -1, stable = 0;
+    await new Promise(r => setTimeout(r, 400)); // let the series begin swapping
+    while (Date.now() - start < timeoutMs) {
+      const info = await evaluate(`(function(){
+        try { var b = ${BARS_PATH};
+          return { sym: ${api}.symbol(), n: (b && typeof b.size === 'function') ? b.size() : 0 };
+        } catch(e){ return { sym: null, n: 0 }; }
+      })()`);
+      if (info && info.sym && tickerOf(info.sym) === want && info.n > 0) {
+        if (info.n === last) { if (++stable >= 2) return true; }
+        else stable = 0;
+        last = info.n;
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    return false;
+  };
+
+  const original = await evaluate(`${api}.symbol()`);
+  const bars = {};
+  const failed = [];
+
+  for (const sym of syms) {
+    try {
+      await evaluate(`${api}.setSymbol(${safeString(sym)}); ${api}.setResolution(${safeString(tf)}, {});`);
+      const ready = await waitReady(sym);
+      if (!ready) { failed.push({ symbol: sym, reason: 'timeout / symbol not confirmed' }); continue; }
+      const b = await readBars();
+      if (!b || !b.length) { failed.push({ symbol: sym, reason: 'no bars' }); continue; }
+      bars[sym] = b;
+    } catch (err) {
+      failed.push({ symbol: sym, reason: err.message });
+    }
+  }
+
+  // Restore the user's chart.
+  try { if (original) await evaluate(`${api}.setSymbol(${safeString(original)})`); } catch {}
+
+  const ok = Object.keys(bars).length;
+  const columns = ['time', 'open', 'high', 'low', 'close', 'volume'];
+
+  if (out_path) {
+    mkdirSync(dirname(out_path), { recursive: true });
+    writeFileSync(out_path, JSON.stringify(bars));
+    return {
+      success: true, timeframe: tf, bars_per_symbol: limit, columns,
+      fetched: ok, requested: syms.length, failed,
+      out_path, note: 'Bars written to disk (not returned in context). Shape: { "SYMBOL": [[time,open,high,low,close,volume], ...] }',
+    };
+  }
+
+  return { success: true, timeframe: tf, bars_per_symbol: limit, columns, fetched: ok, requested: syms.length, failed, bars };
 }
 
 export async function getIndicator({ entity_id }) {

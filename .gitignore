@@ -5,3 +5,7 @@ temp_*
 *.log
 discovery-log.json
 rules.json
+
+# Python artifacts
+__pycache__/
+*.py[cod]

@@ -1,0 +1,142 @@
+{
+  "name": "Qullamaggie Momentum (IN)",
+  "url": "https://www.tradingview.com/screener/d6aYISyT/",
+  "market": "india",
+  "filter": [
+    {
+      "left": "AvgValue.Traded_10d",
+      "operation": "greater",
+      "right": 100000000
+    },
+    {
+      "left": "ADRP",
+      "operation": "egreater",
+      "right": 3
+    },
+    {
+      "left": "SMA50",
+      "operation": "less",
+      "right": "close"
+    },
+    {
+      "left": "Perf.1M",
+      "operation": "greater",
+      "right": 15
+    },
+    {
+      "left": "is_primary",
+      "operation": "equal",
+      "right": true
+    }
+  ],
+  "filter2": {
+    "operator": "and",
+    "operands": [
+      {
+        "operation": {
+          "operator": "or",
+          "operands": [
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "stock"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has",
+                      "right": [
+                        "common"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "stock"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has",
+                      "right": [
+                        "preferred"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "dr"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "fund"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has_none_of",
+                      "right": [
+                        "etf",
+                        "mutual"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "expression": {
+          "left": "typespecs",
+          "operation": "has_none_of",
+          "right": [
+            "pre-ipo"
+          ]
+        }
+      }
+    ]
+  },
+  "sort": {
+    "sortBy": "Perf.1M",
+    "sortOrder": "desc"
+  },
+  "captured_at": "2026-07-10T16:40:32.930Z"
+}

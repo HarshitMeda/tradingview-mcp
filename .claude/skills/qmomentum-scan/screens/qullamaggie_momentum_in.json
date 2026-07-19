@@ -6,7 +6,7 @@
     {
       "left": "AvgValue.Traded_10d",
       "operation": "greater",
-      "right": 100000000
+      "right": 30000000
     },
     {
       "left": "ADRP",

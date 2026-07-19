@@ -9,3 +9,6 @@ rules.json
 # Python artifacts
 __pycache__/
 *.py[cod]
+
+# qmomentum-scan run outputs
+.claude/skills/qmomentum-scan/out/

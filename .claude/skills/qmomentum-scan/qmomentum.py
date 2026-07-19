@@ -328,16 +328,17 @@ def refine_one(sym, bars):
     n = len(bars)
 
     adr = sum((h[i] - l[i]) / c[i] for i in range(n - 20, n)) / 20 * 100  # ADR%(20)
-    hi_i = max(range(max(0, n - 60), n), key=lambda i: h[i])  # recent swing high
-    lo_before = min(l[max(0, hi_i - 40):hi_i + 1]) if hi_i > 0 else l[hi_i]
-    pole = (h[hi_i] - lo_before) / lo_before * 100 if lo_before else 0
-    consol_len = n - 1 - hi_i                       # bars since the swing high
-    since_low = min(l[hi_i:]) if hi_i < n else l[-1]
-    pullback = (h[hi_i] - since_low) / h[hi_i] * 100  # depth of the digestion
+    hi_i = max(range(max(0, n - 60), n), key=lambda i: c[i])  # swing high on closes
+    lo_before = min(c[max(0, hi_i - 40):hi_i + 1]) if hi_i > 0 else c[hi_i]
+    pole = (c[hi_i] - lo_before) / lo_before * 100 if lo_before else 0
+    consol_len = n - 1 - hi_i                       # bars since the highest close
+    since_low = min(c[hi_i:]) if hi_i < n else c[-1]
+    pullback = (c[hi_i] - since_low) / c[hi_i] * 100  # deepest CLOSING drawdown in the base
 
-    rng5 = (max(h[-5:]) - min(l[-5:])) / c[-1] * 100
+    rng5 = (max(h[-5:]) - min(l[-5:])) / c[-1] * 100  # recent range — high-low, to match ADR
     tight = rng5 / adr if adr else None             # 5-day range as x ADR (lower=tighter)
-    hl = min(l[-5:]) > min(l[-10:-5]) if n >= 10 else None  # higher lows
+    rolling_over = c[-1] < c[-2] < c[-3]
+    hl = (min(c[-5:]) > min(c[-10:-5]) and not rolling_over) if n >= 10 else None
     vdry = (sum(v[-5:]) / 5) / (sum(v[-20:]) / 20) if sum(v[-20:]) else None
     stacked = sma(c, 10) > sma(c, 20) > sma(c, 50)
 

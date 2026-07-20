@@ -5,127 +5,114 @@ description: Arm Dhan auto-buy webhook alerts on the "15m Opening Candle Breakou
 
 # TradingView 15m Opening Candle Breakout → Dhan Webhook Alerts
 
-Automates the exact manual flow the user does by hand:
-> open the **15m Opening Candle Breakout** indicator settings → set **Breakout
-> Value, Quantity, secret** → OK → create an **alert** → condition = the indicator,
-> **alert() function calls only**, **15-minute** interval, **Webhook URL** = the
-> Dhan endpoint → Create.
+Arms one 15-minute `alert() function calls only` alert per NSE stock on the
+**15m Opening Candle Breakout** study, wired to the Dhan webhook. The study builds
+the JSON order payload inside its Pine `alert()` from its inputs
+(breakout/qty/secret), so **the alert body is empty — only the webhook URL matters**.
+Everything is driven over CDP with the `tradingview` MCP tools.
 
-It drives the **live TradingView Desktop chart over CDP** using the `tradingview`
-MCP tools. The indicator itself builds the JSON order payload inside its Pine
-`alert()` call from its inputs (breakout/qty/secret), so **the alert only needs the
-webhook URL** — no message body is typed.
+## Inputs
+- **Stocks + breakout price each** — the `trigger` column of the latest
+  [[qmomentum-skill]] Stage-2 ranking (`.../qmomentum-scan/out/refined.json`).
+  "Top N" = first N by `precise_score`.
+- **Budget** ₹/trade (default **₹45,000**) → `qty = round(budget / breakout)`.
+- **Dhan secret** (e.g. `K6Zwo`) and **webhook URL**
+  (`https://tv-webhook.dhan.co/tv/alert/<uuid>/<code>`). Both usually already live
+  in the study/dialog from a prior run — read them (below) rather than asking.
 
-## Inputs you need before running
-- **Stock list with a breakout (trigger) price each.** Normally this is the
-  `trigger` column from the latest [[qmomentum-skill]] Stage-2 table
-  (`.claude/skills/qmomentum-scan/out/refined_<date>.json` /
-  `..._<date>.md`). "Top 10" = the first N by `precise_score`.
-- **Per-trade budget** in ₹ (default **₹45,000**). Quantity = `round(budget /
-  breakout_value)` to whole shares.
-- **Dhan secret** (short token, e.g. `h3SRz`) and **Dhan webhook URL**
-  (`https://tv-webhook.dhan.co/tv/alert/<uuid>/<code>`). Confirm both with the user.
+## Input map (study `15m Opening Candle Breakout`, Pine v8.0)
+`chart_get_state` → the study's `entity_id` (e.g. `YqK47n`, **session-specific**).
+`data_get_indicator(entity_id)` → current inputs, incl. the secret in `in_3`.
 
-## The indicator (study `15m Opening Candle Breakout`, Pine v8.0)
-`chart_get_state` lists it; note its `entity_id` (e.g. `YqK47n`, **session-specific,
-re-read every run**). Its user inputs map like this (v8.0 — verified via the
-settings dialog):
+| id | field | action |
+|----|-------|--------|
+| `in_0` | Breakout Value | set per stock |
+| `in_1` | Quantity | set per stock |
+| `in_2` | Entry Window | leave `90` |
+| `in_3` | secret | already set; leave it, just read it for verification |
 
-| input id | field | notes |
-|---|---|---|
-| `in_0` | **Breakout Value** | the breakout/trigger price — set per stock |
-| `in_1` | **Quantity** | whole shares — set per stock = round(budget ÷ breakout) |
-| `in_2` | Entry Window (min) | leave default (**90**) unless asked |
-| `in_3` | **secret** | Dhan secret — set **once**, persists across symbol changes |
+`in_4`–`in_28` are `strategy()` boilerplate — never touch.
 
-> `in_8`–`in_28` are Pine `strategy()` boilerplate — never touch. Older alerts on
-> disk may show Pine **v6.0** where the map was shifted (`in_2` was the secret and
-> there was no Entry Window) — that's the pre-update schema; the live study is v8.0.
+## Preflight (once)
+1. `tv_health_check` → `cdp_connected` + `api_available`.
+2. `chart_get_state` → study `entity_id`. (Not on chart? It's a private script — ask
+   the user to add it.) Also confirm a chart tab is open (screener page has no chart API).
+3. `data_get_indicator(entity_id)` → read `in_3` (the secret) and confirm v8.0.
+4. `chart_set_timeframe("15")` → the alert inherits "Same as chart" = 15m.
+5. `alert_list` → snapshot. Any existing active alert on a ticker you're about to arm
+   with the same secret = a **duplicate → double orders**; delete it first.
 
-## Preflight
-1. `tv_health_check` → confirm `cdp_connected` and `api_available`.
-2. `chart_get_state` → grab the `entity_id` of `15m Opening Candle Breakout`.
-   If it isn't on the chart, add it / ask the user to add it (it's a private script).
-3. `chart_set_timeframe` → **`15`**. The chart MUST be on 15m so the study evaluates
-   on 15-minute bars and the alert inherits that interval ("Same as chart").
-4. `alert_list` → snapshot existing alerts. Check for **duplicates by ticker** with
-   the current secret (would double-fire) and note stale alerts on an old secret
-   (usually harmless if "Stopped manually", but offer cleanup).
+## Per-stock loop
+Do these in order for each symbol. The alert binds whatever symbol is loaded, so the
+**switch + confirm** (steps 1–2) is what prevents a silent wrong-symbol alert.
 
-## Per-stock loop (repeat for each symbol)
-Order matters. **Switch the symbol first** — the reload forces the study to
-recompute so the new alert reads the freshly-set inputs. (If you configure a symbol
-that's *already loaded* without switching, the alert can snapshot **stale** inputs;
-in that case open the indicator Settings and click **OK** to commit before creating,
-or switch away and back.)
+1. `chart_set_symbol("NSE:<SYM>")` — returns `chart_ready:false`, lags.
+2. `chart_get_state` → **confirm `symbol == NSE:<SYM>`** before touching anything else.
+3. `indicator_set_inputs(entity_id, {"in_0": <breakout>, "in_1": <qty>})`.
+4. `ui_click(aria-label="Create alert")`.
+5. **Set the condition to the study** (⚠️ it does NOT auto-select — it defaults to
+   `Price / Crossing`, which would arm a plain price alert with no order payload):
+   - Open the Condition dropdown (the button reading `Price`).
+   - Pick the **`15m Opening Candle Breakout (…)`** option (last in the study list).
+6. **Set trigger type** — open the type dropdown (defaults to
+   `Order fills and alert() function calls`) and pick **`alert() function calls only`**.
+7. **Verify, then create.** One `ui_evaluate` (below) reads the two dropdown buttons —
+   proceed only if the condition string is
+   `15m Opening Candle Breakout (<breakout>, <qty>, 90, <secret>)` and the trigger is
+   `alert() function calls only`. Then `ui_click(text="Create")`.
+   - **First stock only:** before Create, open Notifications (`App, Toasts, Email,
+     Webhook`) and confirm the **Webhook URL** field == the Dhan URL and its checkbox
+     is checked, then `Apply`. TradingView **retains** the webhook for every later
+     alert, so skip this after #1.
 
-1. **`chart_set_symbol` → `NSE:<SYM>`.** It returns `chart_ready:false` and lags.
-2. **`chart_get_state` → confirm `symbol` == `NSE:<SYM>`** before doing anything
-   else. Skipping this creates the alert on the *previous* symbol with the new
-   values — a silent, dangerous mismatch. Retry `chart_set_symbol` if it hasn't
-   landed.
-3. **`indicator_set_inputs`** `entity_id=<id>`, `inputs={"in_0": <breakout>, "in_1":
-   <qty>}` (set `"in_3": "<secret>"` too on the **first** stock only; it persists).
-4. **`ui_click` `aria-label="Create alert"`** to open the alert dialog.
-5. **Verify the dialog** with `ui_evaluate` — read the first button (symbol) and the
-   condition button. Proceed only if:
-   - symbol == `<SYM>`, and
-   - condition == `15m Opening Candle Breakout (<breakout>, <qty>, 90, <secret>)`.
-6. **Set trigger type to "alert() function calls only":**
-   - `ui_click` `text="Order fills and alert() function calls"` (the default) to
-     open the dropdown.
-   - Click the **`alert() function calls only`** option. Its position is stable at
-     ~**(796, 467)** via `ui_mouse_click`; if unsure, read its rect first with
-     `ui_evaluate` (element with exact text, `offsetParent!==null`).
-   - `ui_evaluate` → confirm the trigger button now reads `alert() function calls only`.
-7. **Webhook** — set it **only on the first stock**; TradingView **retains** the
-   webhook URL + enabled checkbox for every subsequent alert, so skip this step
-   after #1 (the user confirmed this). To set it the first time:
-   - `ui_mouse_click` the notifications summary button (`App, Toasts, Email,
-     Webhook`, ~(749, 565)) to open the Notifications sub-page.
-   - Find the URL input by **placeholder `https://example.com/alert-hook`**. Clear
-     it reliably: `ui_evaluate` → `inp.focus(); inp.setSelectionRange(0,
-     inp.value.length)` then `ui_keyboard Backspace`, verify empty, then
-     `ui_type_text <dhan url>`. (Don't rely on `Cmd/Meta+A`, and don't set `.value`
-     via a synthetic setter alone — it may not commit to React state.)
-   - Confirm the **Webhook URL** checkbox is `aria-checked=true` (it defaults on when
-     a URL is present) and the URL exactly equals the Dhan URL.
-   - `ui_click` `text="Apply"` to return to the main dialog.
-8. **`ui_click` `text="Create"`.** Use the **real** `ui_click`/`ui_mouse_click`
-   tools — a synthetic `.click()` via `ui_evaluate` closes the dialog **without
-   creating** the alert (silent failure).
+### Clicking & verifying (window-independent)
+Menu options render in an overlay; `ui_click(by text)` is unreliable for them and
+hardcoded pixel coordinates drift with window size. Instead resolve an option's
+center at runtime and click it:
 
-## Verify (authoritative — do at the end)
-- `ui_evaluate` scan of the alerts panel: collect every `[data-name="alert-item-name"]`
-  whose text contains the **secret**, with its `alert-item-ticker` and
-  `alert-item-status`. Expect **N rows, all "Active"**, each reading
-  `(<breakout>, <qty>, 90, <secret>): alert() function calls only`.
-- Or `alert_list` (source `internal_api`, the ground truth) — each new alert is
-  `type:"strategy"`, `active:true`, `resolution:"15"`, `pine_version:"8.0"`, with
-  `inputs.in_0/in_1/in_3` == breakout/qty/secret. Note `alert_list` does **not**
-  expose the webhook URL, so the webhook can only be checked in the UI (step 7) —
-  verify it before Create, not after.
-- The alerts fire on the **next session** when a 15m candle breaks the Breakout
-  Value. They're deletable before then (`alert_delete` / panel) if anything's wrong.
+```js
+// ui_evaluate → returns {x,y} center of a visible leaf whose text matches
+(() => { const m=[...document.querySelectorAll('*')]
+  .filter(e=>e.children.length===0 && e.offsetParent &&
+     /alert\(\) function calls only/.test(e.textContent.trim()));
+  if(!m.length) return null; const r=m[m.length-1].getBoundingClientRect();
+  return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)}; })()
+```
+Then `ui_mouse_click(x, y)`. Use `/^15m Opening Candle Breakout \(/` to find the
+condition option the same way.
 
-## Gotchas (learned the hard way)
-- **`chart_ready:false` lag** — always re-check `chart_get_state` after
-  `chart_set_symbol`; the alert will otherwise bind the old symbol.
-- **Stale condition snapshot** — `indicator_set_inputs` updates the study model, but
-  on an *unchanged* symbol the alert dialog can still show the *previous* committed
-  values. The symbol switch (or Settings→OK) is what commits them. Always eyeball the
-  condition string in step 5.
-- **Real events only for Create** — synthetic DOM `.click()` on Create silently
-  no-ops; use the MCP `ui_click`/`ui_mouse_click` tools (genuine CDP input).
-- **Webhook is retained** — set once; verify (don't re-type) on later alerts.
-- **Class-hash selectors are version-fragile** — the dialog root (`.dialog-qyCw0PaN`),
-  legend title (`title-YTFIJ62h`), etc. are hashed class names that change across
-  TradingView builds. Prefer **aria-label / visible text / data-name**, and
-  re-discover element coordinates with `ui_evaluate` rather than hardcoding.
-- **Duplicates = double orders** — before arming, check `alert_list` for an existing
-  active alert on the same ticker+secret.
+Verify snapshot (reads the committed dialog state — no screenshot needed):
+```js
+(() => { const b=[...document.querySelectorAll('button,[role="button"]')].map(e=>e.textContent.trim());
+  return JSON.stringify({
+    cond: b.find(t=>/^15m Opening Candle Breakout \(/.test(t)),
+    trig: b.find(t=>/function calls only|Order fills/.test(t)),
+    hdr:  [...document.querySelectorAll('*')].map(e=>e.textContent).find(t=>/^Create alert on/.test(t.trim())).trim().slice(0,30) }); })()
+```
+`cond` shows the full tuple incl. the secret, e.g. `…(958.2, 47, 90, K6Zwo)`.
 
-## Sizing quick-reference
-`qty = round(budget / breakout)`, `≈value = qty * breakout` (aim within a few % of
-budget). Example at ₹45,000: PGIL 2108.5→21 (₹44,279), PAISALO 74.2→606 (₹44,965),
-TIRUPATIFL 70.9→635 (₹45,022).
+> As a fallback only, the option coordinates in a ~1470px-wide window were roughly:
+> Condition dropdown (795,306) → study option (776,537); trigger dropdown (779,348)
+> → alert()-only option (766,452); Notifications row (745,550). Re-resolve with the
+> snippet above rather than trusting these.
+
+## Final verify (authoritative)
+`alert_list` (source `internal_api`) — expect **N** alerts, each `type:"strategy"`,
+`active:true`, `strategy_mode:"alerts"`, `resolution:"15"`, `pine_version:"8.0"`,
+with `in_0`/`in_1` == breakout/qty and `in_3` == secret. `alert_list` does **not**
+expose the webhook URL — that's why step 7 verifies it in the UI on stock #1.
+
+Alerts fire on the **next session** when a 15m candle breaks the Breakout Value, and
+are deletable until then (`alert_delete`).
+
+## Gotchas
+- **Condition defaults to Price** — always run step 5, or you arm a payload-less price alert.
+- **`Create` needs a real click** — `ui_click`/`ui_mouse_click` only; a synthetic
+  `.click()` via `ui_evaluate` closes the dialog **without creating** the alert.
+- **Confirm the symbol (step 2)** — `chart_ready:false` lag otherwise binds the old symbol.
+- **Webhook is retained** — set/verify once (stock #1), don't re-type after.
+- **Duplicates = double orders** — clear same-ticker+secret alerts in preflight.
+
+## Sizing
+`qty = round(budget / breakout)`, `≈value = qty * breakout`. At ₹45,000:
+LODHA 1219.95→37 (₹45,138), QUESS 308.1→146 (₹44,983), TIRUPATIFL 74.9→601 (₹45,015).

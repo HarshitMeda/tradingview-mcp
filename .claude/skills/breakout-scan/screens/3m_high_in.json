@@ -1,6 +1,6 @@
 {
-  "name": "52W High (IN)",
-  "url": "https://www.tradingview.com/screener/54kormoP/",
+  "name": "3M High (IN)",
+  "url": null,
   "market": "india",
   "filter": [
     {
@@ -12,7 +12,7 @@
       "left": "close",
       "operation": "in_range%",
       "right": [
-        "price_52_week_high",
+        "High.3M",
         0.95,
         1
       ]
@@ -20,7 +20,12 @@
     {
       "left": "ADRP",
       "operation": "egreater",
-      "right": 3.5
+      "right": 3
+    },
+    {
+      "left": "SMA50",
+      "operation": "less",
+      "right": "close"
     },
     {
       "left": "is_primary",
@@ -66,54 +71,7 @@
                     "expression": {
                       "left": "type",
                       "operation": "equal",
-                      "right": "stock"
-                    }
-                  },
-                  {
-                    "expression": {
-                      "left": "typespecs",
-                      "operation": "has",
-                      "right": [
-                        "preferred"
-                      ]
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              "operation": {
-                "operator": "and",
-                "operands": [
-                  {
-                    "expression": {
-                      "left": "type",
-                      "operation": "equal",
                       "right": "dr"
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              "operation": {
-                "operator": "and",
-                "operands": [
-                  {
-                    "expression": {
-                      "left": "type",
-                      "operation": "equal",
-                      "right": "fund"
-                    }
-                  },
-                  {
-                    "expression": {
-                      "left": "typespecs",
-                      "operation": "has_none_of",
-                      "right": [
-                        "etf",
-                        "mutual"
-                      ]
                     }
                   }
                 ]
@@ -137,5 +95,5 @@
     "sortBy": "market_cap_basic",
     "sortOrder": "desc"
   },
-  "captured_at": "2026-07-10T17:15:13.722Z"
+  "captured_at": "2026-07-28"
 }

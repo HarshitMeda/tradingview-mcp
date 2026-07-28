@@ -12,3 +12,4 @@ __pycache__/
 
 # qmomentum-scan run outputs
 .claude/skills/qmomentum-scan/out/
+.claude/skills/breakout-scan/out/

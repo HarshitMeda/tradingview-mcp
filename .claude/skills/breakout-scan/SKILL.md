@@ -24,7 +24,7 @@ they are two different setups and mixing their scoring makes both confusing:
 | Where price sits | pulled **back below** the high, coiling into a flag | **on / at** the high |
 | "High" is… | in the **past** (the flagpole top) | the **current** bar |
 | Consolidation | bars **since** the high | the coil **at** the high (length-agnostic) |
-| Best state | 2–12% under the high | 0–3% under the high |
+| Best state | 2–12% under the high | within ~0.8 ADR of the high (≥2.5%) |
 
 The flag scanner's metrics assume the high is in the past (distance-below-high
 sweet spot, bars-since-high consolidation), so they structurally **under-rate**
@@ -54,8 +54,10 @@ Replays the screen against TradingView's public scanner and gates on snapshot
 fields (proximity to 3M high, coil tightness **in ADR**, trend support, volume
 dry-up, quiet day, a power/pole bonus) into **🟢 actionable / 🟡 building /
 🟠 early**. Because the default screen already pre-selects "near a 3M high",
-the **actionable gate is deliberately strict** (right at the high + genuinely
-tight coil ≤5 ADR/1M + quiet tape) so the daily shortlist stays short (~5–20).
+the **actionable gate is deliberately strict** (within ~0.8 ADR of the high,
+floor 2.5% — so a reclaimed close under an old intraday spike wick still counts
+— + genuinely tight coil ≤5 ADR/1M + quiet tape) so the daily shortlist stays
+short (~5–20).
 Saves the dated `out/breakout_<screen>_<date>.md` (history) and
 `out/breakout_<screen>.json` (feeds Stage 2, overwritten each run). Show the
 **🟢 Actionable** tier and the other counts. The gate score is a funnel, **not**

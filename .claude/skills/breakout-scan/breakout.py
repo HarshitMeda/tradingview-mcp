@@ -184,7 +184,9 @@ def tier(r):
     the actionable gate demands a tight coil + a quiet tape so the daily
     shortlist stays short. Stage 2 (bars) then ranks within it."""
     off = r["off_high"]; coil = r.get("coil_adr"); chg = r["chg"]
-    at_high = off is not None and off <= 2.5
+    adrp = r.get("adrp")
+    at_lim = max(2.5, 0.8 * adrp) if adrp else 2.5
+    at_high = off is not None and off <= at_lim
     tight = coil is not None and coil <= 5          # genuinely tight, in ADR
     quiet = chg is not None and abs(chg) <= 3
     if r["score"] >= 90 and at_high and tight and quiet:

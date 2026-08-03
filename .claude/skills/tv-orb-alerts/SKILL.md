@@ -19,6 +19,10 @@ Everything is driven over CDP with the `tradingview` MCP tools.
 - **Dhan secret** (e.g. `K6Zwo`) and **webhook URL**
   (`https://tv-webhook.dhan.co/tv/alert/<uuid>/<code>`). Both usually already live
   in the study/dialog from a prior run — read them (below) rather than asking.
+  **If the user supplies a secret/webhook that differs from what's stored** (new Dhan
+  account, rotated code), you must **override**: set `in_3` to the new secret on
+  *every* stock (step 3), and *replace* the webhook URL on stock #1 (step 7) — the
+  old values will otherwise silently persist.
 
 ## Input map (study `15m Opening Candle Breakout`, Pine v8.0)
 `chart_get_state` → the study's `entity_id` (e.g. `YqK47n`, **session-specific**).
@@ -29,7 +33,7 @@ Everything is driven over CDP with the `tradingview` MCP tools.
 | `in_0` | Breakout Value | set per stock |
 | `in_1` | Quantity | set per stock |
 | `in_2` | Entry Window | leave `90` |
-| `in_3` | secret | already set; leave it, just read it for verification |
+| `in_3` | secret | read it; leave as-is **unless** the user gave a new secret, then set it per stock |
 
 `in_4`–`in_28` are `strategy()` boilerplate — never touch.
 
@@ -48,7 +52,9 @@ Do these in order for each symbol. The alert binds whatever symbol is loaded, so
 
 1. `chart_set_symbol("NSE:<SYM>")` — returns `chart_ready:false`, lags.
 2. `chart_get_state` → **confirm `symbol == NSE:<SYM>`** before touching anything else.
-3. `indicator_set_inputs(entity_id, {"in_0": <breakout>, "in_1": <qty>})`.
+3. `indicator_set_inputs(entity_id, {"in_0": <breakout>, "in_1": <qty>})` — add
+   `"in_3": "<secret>"` too if the user gave a new secret. The study option text in
+   the alert dialog echoes these live, so this is what you verify against in step 7.
 4. `ui_click(aria-label="Create alert")`.
 5. **Set the condition to the study** (⚠️ it does NOT auto-select — it defaults to
    `Price / Crossing`, which would arm a plain price alert with no order payload):
@@ -59,11 +65,32 @@ Do these in order for each symbol. The alert binds whatever symbol is loaded, so
 7. **Verify, then create.** One `ui_evaluate` (below) reads the two dropdown buttons —
    proceed only if the condition string is
    `15m Opening Candle Breakout (<breakout>, <qty>, 90, <secret>)` and the trigger is
-   `alert() function calls only`. Then `ui_click(text="Create")`.
-   - **First stock only:** before Create, open Notifications (`App, Toasts, Email,
-     Webhook`) and confirm the **Webhook URL** field == the Dhan URL and its checkbox
-     is checked, then `Apply`. TradingView **retains** the webhook for every later
-     alert, so skip this after #1.
+   `alert() function calls only`. Then click **Create** — resolve its center at runtime
+   (`/^Create$/`, see snippet) because its **y drifts** with dialog height (≈562 when the
+   notifications panel collapsed on stock #1, ≈615 on later stocks) — don't hardcode it.
+   - **First stock only — set the webhook (two separate buttons, don't confuse them):**
+     before Create, open Notifications (the `App, Toasts, Email, Webhook` row). Confirm
+     the **Webhook** checkbox is checked and the **Webhook URL** field holds the Dhan URL.
+     The notifications sub-panel's primary button is **`Apply`** — clicking it applies the
+     webhook and **collapses back to the main dialog; it does NOT create the alert.** Only
+     the main dialog's **`Create`** button (which reappears after Apply) creates it. So the
+     order on stock #1 is: set webhook → `Apply` → main `Create`. TradingView **retains**
+     the webhook for every later alert, so skip the whole notifications step after #1.
+   - **Replacing an existing webhook URL** (user gave a new one): clicking the field and
+     typing inserts **mid-string**, and `Cmd+A`+`Backspace` does **not** reliably clear a
+     React-controlled input. Clear it programmatically, then type:
+     ```js
+     // ui_evaluate: clear the webhook input (note: it has NO explicit type attr, so
+     // querySelectorAll('input[type=text]') MISSES it — filter on e.type instead)
+     (() => { const el=[...document.querySelectorAll('input')]
+       .filter(e=>e.offsetParent && e.type==='text')
+       .find(e=>/dhan|example\.com/.test(e.value+e.placeholder));
+       if(!el) return 'notfound';
+       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'');
+       el.dispatchEvent(new Event('input',{bubbles:true})); el.focus(); return 'cleared'; })()
+     ```
+     Then `ui_type_text("<full Dhan URL>")` and re-read the field to confirm it equals the
+     URL exactly (right length, no leftover fragments).
 
 ### Clicking & verifying (window-independent)
 Menu options render in an overlay; `ui_click(by text)` is unreliable for them and
@@ -79,7 +106,13 @@ center at runtime and click it:
   return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)}; })()
 ```
 Then `ui_mouse_click(x, y)`. Use `/^15m Opening Candle Breakout \(/` to find the
-condition option the same way.
+condition option the same way, and `/^Create$/` (match on a `button`/`[role=button]`,
+not any leaf) to resolve the moving **Create** button before clicking it.
+
+The two dropdowns and Create live in a centered modal, so their button anchors are
+stable within a session even with side panels open: **Condition dropdown ≈(798,307)**,
+**trigger dropdown ≈(782,349)**. The overlay *options* they open (study option ≈y538,
+`alert()`-only ≈y452) must still be re-resolved each time with the snippet above.
 
 Verify snapshot (reads the committed dialog state — no screenshot needed):
 ```js
@@ -102,16 +135,34 @@ Verify snapshot (reads the committed dialog state — no screenshot needed):
 with `in_0`/`in_1` == breakout/qty and `in_3` == secret. `alert_list` does **not**
 expose the webhook URL — that's why step 7 verifies it in the UI on stock #1.
 
+A **just-created** alert shows `active:false` for up to ~1 min — it's mid-`Activating`
+(the alerts-panel row literally reads "Activating"), **not** paused. Don't re-create it.
+Just re-poll `alert_list` a moment later and confirm it flips to `active:true`. (A truly
+paused prior alert — e.g. yesterday's, or a different secret — also reads `active:false`;
+distinguish by `created` timestamp and `in_3`.)
+
 Alerts fire on the **next session** when a 15m candle breaks the Breakout Value, and
 are deletable until then (`alert_delete`).
 
 ## Gotchas
-- **Condition defaults to Price** — always run step 5, or you arm a payload-less price alert.
+- **Condition defaults to Price** — the dialog does **not** remember the study across
+  alerts; every new dialog reopens on `Price / Crossing`, so run steps 5–6 each time.
+- **`Apply` ≠ `Create`** — on stock #1 the notifications sub-panel's `Apply` only applies
+  the webhook and returns to the main dialog. The alert is created **only** by the main
+  dialog's `Create`. After Apply, verify `Create` reappeared, then click it, then
+  confirm via `alert_list` (it's the sole source of truth — the dialog closing isn't).
 - **`Create` needs a real click** — `ui_click`/`ui_mouse_click` only; a synthetic
-  `.click()` via `ui_evaluate` closes the dialog **without creating** the alert.
+  `.click()` via `ui_evaluate` closes the dialog **without creating** the alert. Its y
+  drifts with dialog height — resolve `/^Create$/` at runtime, don't hardcode.
+- **Webhook input has no `type` attribute** — find it with
+  `[...document.querySelectorAll('input')].filter(e=>e.type==='text')`, not the
+  `input[type=text]` selector (which silently returns nothing). To replace its value,
+  clear via the native setter + `input` event first — typing alone inserts mid-string.
+- **`active:false` right after Create = "Activating"**, not paused — re-poll, it flips.
 - **Confirm the symbol (step 2)** — `chart_ready:false` lag otherwise binds the old symbol.
 - **Webhook is retained** — set/verify once (stock #1), don't re-type after.
 - **Duplicates = double orders** — clear same-ticker+secret alerts in preflight.
+  (A *paused* same-ticker alert with a *different* secret is not a duplicate — leave it.)
 
 ## Sizing
 `qty = round(budget / breakout)`, `≈value = qty * breakout`. At ₹45,000:

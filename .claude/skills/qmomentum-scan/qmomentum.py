@@ -122,12 +122,12 @@ def coarse_score(r):
     # off1 = % the close sits BELOW the 1M high (>=0 below, ~0 at highs).
     off1 = (r["h1"] - close) / r["h1"] * 100 if r["h1"] else None
     if off1 is not None:
-        if 2 <= off1 <= 12:
-            s += 25; why.append(f"coiled {off1:.1f}% under 1M high")
+        if 0 <= off1 <= 12:
+            s += 25
+            why.append("at/near 1M high" if off1 < 2
+                       else f"coiled {off1:.1f}% under 1M high")
         elif 12 < off1 <= 20:
             s += 15; why.append(f"{off1:.1f}% under 1M high")
-        elif 0 <= off1 < 2:
-            s += 10; why.append("at 1M high (breaking out?)")
         elif 20 < off1 <= 35:
             s += 6
 

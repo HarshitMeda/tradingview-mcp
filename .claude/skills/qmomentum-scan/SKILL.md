@@ -20,7 +20,11 @@ Stage 2 ranks — so nothing is computed-then-merged twice:
   snapshot fields (MA stacking, distance from 10SMA in ADRs, pullback from highs,
   pole strength, quiet day, volume dry-up) purely as a **gate** to eliminate
   obvious non-setups and bucket the survivors into **🟢 actionable / 🟡 building /
-  🟠 early**. Its score only draws the gate — it does **not** rank.
+  🟠 early**. Its score only draws the gate — it does **not** rank. A **hard
+  pre-filter** runs first: any name more than **1 ADR from its 10-day SMA** (in
+  either direction) is dropped outright, whatever its score — the entry must fire
+  from a tight coil hugging the 10SMA (tune via `MAX_S10_DIST_ADR` in
+  `qmomentum.py`).
 - **Stage 2 — the RANKER (precise, uses the TradingView MCP):** for the actionable
   shortlist, pull daily bars and compute the tightness metrics the snapshot can't
   express (exact ADR, consolidation length, pullback depth, 5-day range ÷ ADR,

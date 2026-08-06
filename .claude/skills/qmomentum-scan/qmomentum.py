@@ -42,6 +42,10 @@ COLUMNS = [
     "Volatility.D", "ADRP", "Value.Traded", "relative_volume_10d_calc",
 ]
 
+# Hard filter: a continuation/breakout entry must fire from a tight coil hugging
+# the 10-day SMA.
+MAX_S10_DIST_ADR = 1.0
+
 # ---------------------------------------------------------------------------
 # Stage 1 — fetch + coarse score
 # ---------------------------------------------------------------------------
@@ -208,6 +212,9 @@ def scan_and_score(screen, limit=400, market="india"):
         coarse_score(r)
         r["tier"] = tier(r)
     rows = [r for r in rows if r["tier"] != "drop"]
+    rows = [r for r in rows
+            if r.get("ext_s10_adr") is None
+            or abs(r["ext_s10_adr"]) <= MAX_S10_DIST_ADR]
     rows.sort(key=lambda r: (-r["score"], r.get("off_high_1m") or 99))
     return total, rows
 
@@ -305,8 +312,11 @@ def render_markdown(today, total, rows, title="Built-in Qullamaggie filter"):
                 f"{r['off_high_1m']:.1f}%" if r["off_high_1m"] is not None else "—",
                 f"{ext_adr:+.1f}" if ext_adr is not None else "—",
                 "; ".join(r["why"][:3])))
-    out.append("\n> Stage-1 snapshot scan. Run Stage-2 (bars + screenshots) on the "
-               "🟢 Actionable tier before trading — see SKILL.md.")
+    out.append(f"\n> Stage-1 snapshot scan. Hard filter applied: names more than "
+               f"{MAX_S10_DIST_ADR:g} ADR from their 10-day SMA are dropped "
+               f"(extended / broken down = not an entry). "
+               f"Run Stage-2 (bars + screenshots) on the 🟢 Actionable tier before "
+               f"trading — see SKILL.md.")
     return "\n".join(out)
 
 

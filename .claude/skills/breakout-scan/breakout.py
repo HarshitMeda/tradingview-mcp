@@ -48,6 +48,10 @@ COLUMNS = [
     "Volatility.D", "ADRP", "Value.Traded", "relative_volume_10d_calc",
 ]
 
+# Hard filter: a breakout entry must fire from a tight coil hugging the 10-day
+# SMA.
+MAX_S10_DIST_ADR = 1.0
+
 # ---------------------------------------------------------------------------
 # Stage 1 — fetch + coarse gate
 # ---------------------------------------------------------------------------
@@ -170,6 +174,9 @@ def coarse_score(r):
     elif 10 <= p3 < 20 or 200 < p3 <= 400:
         s += 5
 
+    ext10 = (close - s10) / s10 * 100 if s10 else None
+    r["dist_s10_adr"] = round(abs(ext10) / adrp, 2) if (ext10 is not None and adrp) else None
+
     r["off_high"] = round(off, 1) if off is not None else None
     r["coil_adr"] = round(coil, 1) if coil is not None else None
     r["score"] = min(s, 100)
@@ -213,6 +220,9 @@ def scan_and_score(screen, limit=400, market="india"):
         coarse_score(r)
         r["tier"] = tier(r)
     rows = [r for r in rows if r["tier"] != "drop"]
+    rows = [r for r in rows
+            if r.get("dist_s10_adr") is None
+            or r["dist_s10_adr"] <= MAX_S10_DIST_ADR]
     rows.sort(key=lambda r: (-r["score"], r.get("off_high") or 99))
     return total, rows
 
@@ -305,8 +315,10 @@ def render_markdown(today, total, rows, title="Base-Breakout filter"):
                 f"{r['off_high']:.1f}%" if r["off_high"] is not None else "—",
                 f"{r['coil_adr']:.1f}" if r.get("coil_adr") is not None else "—",
                 "; ".join(r["why"][:3])))
-    out.append("\n> Stage-1 snapshot gate. Run Stage-2 (bars) on the 🟢 Actionable "
-               "tier before trading — see SKILL.md.")
+    out.append(f"\n> Stage-1 snapshot gate. Hard filter applied: names more than "
+               f"{MAX_S10_DIST_ADR:g} ADR from their 10-day SMA are dropped "
+               f"(extended / broken down = not an entry). "
+               f"Run Stage-2 (bars) on the 🟢 Actionable tier before trading — see SKILL.md.")
     return "\n".join(out)
 
 

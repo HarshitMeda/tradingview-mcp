@@ -53,7 +53,11 @@ python3 .claude/skills/breakout-scan/breakout.py scan --screen screens/3m_high_i
 Replays the screen against TradingView's public scanner and gates on snapshot
 fields (proximity to 3M high, coil tightness **in ADR**, trend support, volume
 dry-up, quiet day, a power/pole bonus) into **🟢 actionable / 🟡 building /
-🟠 early**. Because the default screen already pre-selects "near a 3M high",
+🟠 early**. A **hard pre-filter** runs first: any name more than **1 ADR from
+its 10-day SMA** (either extended above it or broken down below it) is dropped
+outright, whatever its score — a breakout entry must fire from a tight coil
+hugging the 10SMA (tune via `MAX_S10_DIST_ADR` in `breakout.py`). Because the
+default screen already pre-selects "near a 3M high",
 the **actionable gate is deliberately strict** (within ~0.8 ADR of the high,
 floor 2.5% — so a reclaimed close under an old intraday spike wick still counts
 — + genuinely tight coil ≤5 ADR/1M + quiet tape) so the daily shortlist stays

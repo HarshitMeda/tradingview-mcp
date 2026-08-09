@@ -46,6 +46,13 @@ COLUMNS = [
 # the 10-day SMA.
 MAX_S10_DIST_ADR = 1.0
 
+# Hard filter (Stage 2): the breakout trigger must be within ~1 ADR of the current
+# close, i.e. reachable in a single session. Names whose flag high sits farther
+# overhead (a deep pullback not yet recovered, or a rejected reversal spike) can't
+# realistically break out same-day, so they're dropped from the ranking rather than
+# armed as ORB alerts that will never fire.
+MAX_TRIG_DIST_ADR = 1.0
+
 # ---------------------------------------------------------------------------
 # Stage 1 — fetch + coarse score
 # ---------------------------------------------------------------------------
@@ -345,6 +352,16 @@ def refine_one(sym, bars):
     since_low = min(c[hi_i:]) if hi_i < n else c[-1]
     pullback = (c[hi_i] - since_low) / c[hi_i] * 100  # deepest CLOSING drawdown in the base
 
+    # Breakout trigger = top of the flag that formed off the pullback low, i.e. the
+    # high since the deepest low AFTER the swing-high close. This emulates Qullamaggie
+    # (buy the break of the recent contraction, not a reclaim of the absolute high) and,
+    # because it tracks the recent tight range, it stays reachable same-day for the ORB
+    # alert. It collapses to the prior-day high when no flag has formed yet (last bar is
+    # the pullback low), and stays at the swing high for names still pressing their top.
+    lo_i = min(range(hi_i, n), key=lambda i: l[i])  # deepest low after the swing-high close
+    trigger = max(h[lo_i:])                          # flag high = breakout pivot
+    trig_dist_adr = (trigger - c[-1]) / c[-1] / (adr / 100) if adr else None
+
     rng5 = (max(h[-5:]) - min(l[-5:])) / c[-1] * 100  # recent range — high-low, to match ADR
     tight = rng5 / adr if adr else None             # 5-day range as x ADR (lower=tighter)
     rolling_over = c[-1] < c[-2] < c[-3]
@@ -373,7 +390,8 @@ def refine_one(sym, bars):
             "pullback_pct": round(pullback, 1), "range5_over_adr": round(tight, 2) if tight else None,
             "higher_lows": hl, "vol_dryup": round(vdry, 2) if vdry else None,
             "mas_stacked": stacked,
-            "trigger": round(max(h[-max(consol_len,1):]) if consol_len else h[-1], 2)}
+            "trigger": round(trigger, 2),
+            "trig_dist_adr": round(trig_dist_adr, 2) if trig_dist_adr is not None else None}
 
 
 # The refiner owns ONLY this table block in the dated report (exact, rules-based
@@ -384,26 +402,36 @@ S2_TABLE_START = "<!-- stage2-table:start -->"
 S2_TABLE_END = "<!-- stage2-table:end -->"
 
 
-def render_refined_table(date, good, errors, title):
+def render_refined_table(date, good, errors, title, far=None):
     """The full ranked table as markdown — deterministic, so the numbers are
     exact and no model transcription is involved. No interpretive digest here:
     that's the model's job (see SKILL.md)."""
+    far = far or []
+    skips = []
+    if errors:
+        skips.append(f"{len(errors)} skipped (insufficient bars)")
+    if far:
+        names = ", ".join(f"{r['sym'].split(':')[-1]} {r['trig_dist_adr']:.1f}" for r in far)
+        skips.append(f"{len(far)} dropped (trigger > {MAX_TRIG_DIST_ADR:g} ADR away: {names})")
     out = [f"## Stage 2 — Refined Ranking ({title}) — {date}", ""]
     out.append(f"Ranked by `precise_score` (bar-derived tightness — the sole ranking). "
                f"**{len(good)}** names refined"
-               + (f", {len(errors)} skipped (insufficient bars)." if errors else "."))
+               + (", " + "; ".join(skips) + "." if skips else "."))
     out.append("")
-    out.append("| # | Symbol | Score | Gate | Close | Trigger | Stop~ | ADR% | Pole% | "
+    out.append("| # | Symbol | Score | Gate | Close | Trigger | Δtrig | Stop~ | ADR% | Pole% | "
                "Consol | Pull% | 5d/ADR | HL | VolDry | Stacked |")
-    out.append("|--:|--------|------:|------|------:|--------:|------:|-----:|------:|"
+    out.append("|--:|--------|------:|------|------:|--------:|------:|------:|-----:|------:|"
                "-------:|------:|-------:|:--:|-------:|:------:|")
     for i, r in enumerate(good, 1):
-        adr = r.get("adr_pct"); trig = r.get("trigger")
+        adr = r.get("adr_pct"); trig = r.get("trigger"); dist = r.get("trig_dist_adr")
         # Qullamaggie stop ≈ 1× ADR below the breakout entry.
         stop = round(trig * (1 - adr / 100), 2) if (trig and adr) else None
-        out.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        # ADRs from close to the breakout trigger (all <= MAX_TRIG_DIST_ADR here —
+        # farther names are dropped upstream in run_refine).
+        dist_s = "—" if dist is None else f"{dist:.1f}"
+        out.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             i, r["sym"].split(":")[-1], r["precise_score"], r.get("gate", "—"),
-            r.get("close"), trig, stop if stop is not None else "—",
+            r.get("close"), trig, dist_s, stop if stop is not None else "—",
             adr, r.get("pole_pct"), r.get("consol_days"), r.get("pullback_pct"),
             r.get("range5_over_adr"), "✓" if r.get("higher_lows") else "·",
             r.get("vol_dryup"), "✓" if r.get("mas_stacked") else "·"))
@@ -460,23 +488,30 @@ def run_refine(args):
             res["gate"] = gate[sym]   # Stage-1 filter bucket (label only, not scored)
         results.append(res)
     good = [r for r in results if "error" not in r]
-    good.sort(key=lambda r: -r["precise_score"])
     errors = [r for r in results if "error" in r]
+    # Hard filter: drop names whose breakout trigger is > MAX_TRIG_DIST_ADR overhead —
+    # unreachable in a single session, so not a same-day breakout entry (see the constant).
+    far = [r for r in good
+           if r.get("trig_dist_adr") is not None and r["trig_dist_adr"] > MAX_TRIG_DIST_ADR]
+    good = [r for r in good if r not in far]
+    good.sort(key=lambda r: -r["precise_score"])
+    far.sort(key=lambda r: -r["precise_score"])
 
     # Full ranking -> one stable JSON (overwritten each run), out of context.
     os.makedirs(args.outdir, exist_ok=True)
     out_path = os.path.join(args.outdir, "refined.json")
     with open(out_path, "w") as f:
-        json.dump({"date": sdate, "screen": title, "refined": good, "errors": errors},
-                  f, indent=2)
+        json.dump({"date": sdate, "screen": title, "refined": good,
+                   "dropped_far": far, "errors": errors}, f, indent=2)
 
     # Exact ranked table -> the dated report, in the refiner's own marked block.
     # The model then writes its interpretive read ABOVE this block (see SKILL.md).
     if report_path:
-        upsert_section(report_path, render_refined_table(sdate, good, errors, title),
+        upsert_section(report_path, render_refined_table(sdate, good, errors, title, far),
                        S2_TABLE_START, S2_TABLE_END)
 
-    print(f"Stage 2 refined: {len(good)} ranked, {len(errors)} skipped -> {out_path}"
+    print(f"Stage 2 refined: {len(good)} ranked, {len(far)} dropped (far trigger), "
+          f"{len(errors)} skipped -> {out_path}"
           + (f"; table -> {report_path} (now author the read above the table)"
              if report_path else ""))
 

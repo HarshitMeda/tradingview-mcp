@@ -123,8 +123,16 @@ its original symbol when done, and reads bars from the internal
 Refiner output per name, ranked by `precise_score` (bar-derived tightness, the
 sole ranking): `adr_pct`, `gate` (Stage-1 bucket, context only),
 `pole_pct`, `consol_days`, `pullback_pct`, `range5_over_adr` (lower = tighter,
-want ≤ ~2.5), `higher_lows`, `vol_dryup` (<1 good), `mas_stacked`, and `trigger`
-(breakout price = top of the recent consolidation).
+want ≤ ~2.5), `higher_lows`, `vol_dryup` (<1 good), `mas_stacked`, `trigger`
+(breakout price = high of the flag since the pullback low — emulates buying the
+break of the recent contraction, à la Qullamaggie, NOT a reclaim of the absolute
+high), and `trig_dist_adr` (ADRs from close up to the trigger; the `Δtrig` column).
+
+**Stage-2 hard filter:** names whose `trig_dist_adr` > `MAX_TRIG_DIST_ADR` (1.0)
+are dropped from the ranking — the trigger is too far overhead to break out in a
+single session (a deep pullback not yet recovered, or a rejected reversal spike),
+so it can't be armed as a same-day ORB alert. Dropped names surface in the table
+header note and in `refined.json`'s `dropped_far` (so they're auditable, not lost).
 
 **Screenshots are optional and OFF by default.** The bar metrics already
 quantify the flag shape, so a screenshot only re-confirms the numbers and is the

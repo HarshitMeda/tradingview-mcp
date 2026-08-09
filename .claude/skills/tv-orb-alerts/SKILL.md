@@ -12,10 +12,10 @@ the JSON order payload inside its Pine `alert()` from its inputs
 Everything is driven over CDP with the `tradingview` MCP tools.
 
 ## Inputs
-- **Stocks + breakout price each** — the `trigger` column of the latest
-  [[qmomentum-skill]] Stage-2 ranking (`.../qmomentum-scan/out/refined.json`).
-  "Top N" = first N by `precise_score`.
-- **Budget** ₹/trade (default **₹45,000**) → `qty = round(budget / breakout)`.
+- **Stocks + breakout price each** — the `trigger` of the latest
+  [[qmomentum-skill]] ranking (`.../qmomentum-scan/out/refined.json`, the `ranked`
+  list). "Top N" = first N by `score`.
+- **Budget** ₹/trade (default **₹100,000**) → `qty = round(budget / breakout)`.
 - **Dhan secret** (e.g. `K6Zwo`) and **webhook URL**
   (`https://tv-webhook.dhan.co/tv/alert/<uuid>/<code>`). Both usually already live
   in the study/dialog from a prior run — read them (below) rather than asking.

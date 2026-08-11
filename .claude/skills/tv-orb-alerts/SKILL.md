@@ -20,28 +20,36 @@ Everything is driven over CDP with the `tradingview` MCP tools.
   (`https://tv-webhook.dhan.co/tv/alert/<uuid>/<code>`). Both usually already live
   in the study/dialog from a prior run — read them (below) rather than asking.
   **If the user supplies a secret/webhook that differs from what's stored** (new Dhan
-  account, rotated code), you must **override**: set `in_3` to the new secret on
+  account, rotated code), you must **override**: set `in_2` to the new secret on
   *every* stock (step 3), and *replace* the webhook URL on stock #1 (step 7) — the
-  old values will otherwise silently persist.
+  old values will otherwise silently persist. (Setting `in_2` on every stock even when
+  it already matches is cheap insurance — do it unconditionally.)
 
-## Input map (study `15m Opening Candle Breakout`, Pine v8.0)
+## Input map (study `15m Opening Candle Breakout`, Pine v9.0)
 `chart_get_state` → the study's `entity_id` (e.g. `YqK47n`, **session-specific**).
-`data_get_indicator(entity_id)` → current inputs, incl. the secret in `in_3`.
+`data_get_indicator(entity_id)` → current inputs, incl. the secret in `in_2`.
+
+⚠️ **The map shifted in v9.0** — the secret is now **`in_2`** (it was `in_3` in v8.0),
+and the old `in_2` "Entry Window" (`90`) param is **gone**. So the alert condition
+string now reads `(<breakout>, <qty>, <secret>)` — three values, no `90`. Always
+`data_get_indicator` first and confirm the live layout rather than trusting this table.
 
 | id | field | action |
 |----|-------|--------|
 | `in_0` | Breakout Value | set per stock |
 | `in_1` | Quantity | set per stock |
-| `in_2` | Entry Window | leave `90` |
-| `in_3` | secret | read it; leave as-is **unless** the user gave a new secret, then set it per stock |
+| `in_2` | secret | set per stock (matches stored value; override if user gave a new secret) |
+| `in_3` | boilerplate (`1`) | leave |
 
-`in_4`–`in_28` are `strategy()` boilerplate — never touch.
+`in_3`–`in_27` are `strategy()` boilerplate — never touch.
 
 ## Preflight (once)
 1. `tv_health_check` → `cdp_connected` + `api_available`.
 2. `chart_get_state` → study `entity_id`. (Not on chart? It's a private script — ask
    the user to add it.) Also confirm a chart tab is open (screener page has no chart API).
-3. `data_get_indicator(entity_id)` → read `in_3` (the secret) and confirm v8.0.
+3. `data_get_indicator(entity_id)` → read `in_2` (the secret) and confirm v9.0
+   (if `pine_version` is `8.0`, the secret is `in_3` and the condition tuple carries a
+   `90` — adapt to whatever the live layout actually is).
 4. `chart_set_timeframe("15")` → the alert inherits "Same as chart" = 15m.
 5. `alert_list` → snapshot. Any existing active alert on a ticker you're about to arm
    with the same secret = a **duplicate → double orders**; delete it first.
@@ -52,9 +60,9 @@ Do these in order for each symbol. The alert binds whatever symbol is loaded, so
 
 1. `chart_set_symbol("NSE:<SYM>")` — returns `chart_ready:false`, lags.
 2. `chart_get_state` → **confirm `symbol == NSE:<SYM>`** before touching anything else.
-3. `indicator_set_inputs(entity_id, {"in_0": <breakout>, "in_1": <qty>})` — add
-   `"in_3": "<secret>"` too if the user gave a new secret. The study option text in
-   the alert dialog echoes these live, so this is what you verify against in step 7.
+3. `indicator_set_inputs(entity_id, {"in_0": <breakout>, "in_1": <qty>, "in_2": "<secret>"})`.
+   The study option text in the alert dialog echoes these live, so this is what you
+   verify against in step 7.
 4. `ui_click(aria-label="Create alert")`.
 5. **Set the condition to the study** (⚠️ it does NOT auto-select — it defaults to
    `Price / Crossing`, which would arm a plain price alert with no order payload):
@@ -64,10 +72,12 @@ Do these in order for each symbol. The alert binds whatever symbol is loaded, so
    `Order fills and alert() function calls`) and pick **`alert() function calls only`**.
 7. **Verify, then create.** One `ui_evaluate` (below) reads the two dropdown buttons —
    proceed only if the condition string is
-   `15m Opening Candle Breakout (<breakout>, <qty>, 90, <secret>)` and the trigger is
+   `15m Opening Candle Breakout (<breakout>, <qty>, <secret>)` (v9.0; a `90` between qty
+   and secret means you're on the older v8.0 layout) and the trigger is
    `alert() function calls only`. Then click **Create** — resolve its center at runtime
-   (`/^Create$/`, see snippet) because its **y drifts** with dialog height (≈562 when the
-   notifications panel collapsed on stock #1, ≈615 on later stocks) — don't hardcode it.
+   (`/^Create$/`, see snippet) because its **y drifts** with dialog height — don't
+   hardcode it (observed ≈645 in a ~1470px-wide window this session, both on stock #1 and
+   later stocks, but treat that as illustrative only).
    - **First stock only — set the webhook (two separate buttons, don't confuse them):**
      before Create, open Notifications (the `App, Toasts, Email, Webhook` row). Confirm
      the **Webhook** checkbox is checked and the **Webhook URL** field holds the Dhan URL.
@@ -122,7 +132,8 @@ Verify snapshot (reads the committed dialog state — no screenshot needed):
     trig: b.find(t=>/function calls only|Order fills/.test(t)),
     hdr:  [...document.querySelectorAll('*')].map(e=>e.textContent).find(t=>/^Create alert on/.test(t.trim())).trim().slice(0,30) }); })()
 ```
-`cond` shows the full tuple incl. the secret, e.g. `…(958.2, 47, 90, K6Zwo)`.
+`cond` shows the full tuple incl. the secret, e.g. `…(958.2, 47, K6Zwo)` (v9.0;
+v8.0 was `…(958.2, 47, 90, K6Zwo)`).
 
 > As a fallback only, the option coordinates in a ~1470px-wide window were roughly:
 > Condition dropdown (795,306) → study option (776,537); trigger dropdown (779,348)
@@ -131,9 +142,13 @@ Verify snapshot (reads the committed dialog state — no screenshot needed):
 
 ## Final verify (authoritative)
 `alert_list` (source `internal_api`) — expect **N** alerts, each `type:"strategy"`,
-`active:true`, `strategy_mode:"alerts"`, `resolution:"15"`, `pine_version:"8.0"`,
-with `in_0`/`in_1` == breakout/qty and `in_3` == secret. `alert_list` does **not**
+`active:true`, `strategy_mode:"alerts"`, `resolution:"15"`, `pine_version:"9.0"`,
+with `in_0`/`in_1` == breakout/qty and `in_2` == secret. `alert_list` does **not**
 expose the webhook URL — that's why step 7 verifies it in the UI on stock #1.
+
+`internal_api` **lags a few seconds** — a just-created alert can be absent from the
+very next `alert_list` even though it succeeded (dialog already closed). Re-poll once
+before concluding it failed; don't re-create on the first empty read.
 
 A **just-created** alert shows `active:false` for up to ~1 min — it's mid-`Activating`
 (the alerts-panel row literally reads "Activating"), **not** paused. Don't re-create it.
@@ -160,6 +175,13 @@ are deletable until then (`alert_delete`).
   clear via the native setter + `input` event first — typing alone inserts mid-string.
 - **`active:false` right after Create = "Activating"**, not paused — re-poll, it flips.
 - **Confirm the symbol (step 2)** — `chart_ready:false` lag otherwise binds the old symbol.
+- **BSE-only names resolve to a *delayed* feed** — some qmomentum picks are BSE-listed
+  (`BSE:<SYM>`) with no NSE listing. On a plan without real-time BSE data, `chart_set_symbol`
+  silently resolves them to **`BSE_DLY:<SYM>`** (15-min delayed), which `chart_get_state`
+  reveals. An ORB alert on a delayed feed **fires ~15 min late** (worse fill). Also watch
+  for **`This symbol doesn't exist`** if you guess an `NSE:` ticker that isn't listed
+  (`symbol_search` to confirm). This is a money decision — surface it and let the user
+  choose: arm on the delayed feed, substitute the next-ranked real-time NSE name, or skip.
 - **Webhook is retained** — set/verify once (stock #1), don't re-type after.
 - **Duplicates = double orders** — clear same-ticker+secret alerts in preflight.
   (A *paused* same-ticker alert with a *different* secret is not a duplicate — leave it.)

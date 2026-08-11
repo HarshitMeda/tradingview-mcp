@@ -13,8 +13,9 @@ judgement:
   * eliminate_losses (columns): drop below-50SMA / stretched >1 ADR from the 10SMA.
   * score (bars): the flag whose high is in the PAST — pole from the swing high,
     consolidation length since it, pullback depth, and a breakout trigger at the
-    top of the flag off the pullback low. Weighted so coil tightness + trigger
-    proximity dominate; pole strength is a minor input.
+    top of the flag off the pullback low. Scored on setup quality — coil tightness
+    dominates; pole strength is a minor input. Trigger distance is a hard gate, not
+    a score input (rewarding proximity ranked premature-trigger names highest).
 
   python3 qmomentum.py scan --screen screens/<s>.json --outdir out
   <model> data_get_ohlcv_batch(symbols=shortlist) -> out/bars.json
@@ -31,11 +32,13 @@ class QMomentum(ScreenerRanking):
     COLUMNS = ["name", "close", "change", "Perf.1M", "Perf.3M",
                "SMA10", "SMA20", "SMA50", "High.1M", "ADRP"]
     DEFAULT_SORT = {"sortBy": "Perf.1M", "sortOrder": "desc"}
-    SCORE_BLURB = ("Ranked by `score` — bar-derived breakout-readiness (coil tightness "
-                   "+ trigger proximity dominate). This is the sole ranking.")
+    SCORE_BLURB = ("Ranked by `score` — bar-derived setup quality (coil tightness "
+                   "dominates; trigger distance is a gate, not scored). This is the sole ranking.")
 
     MAX_S10_DIST_ADR = 1.0   # a coil must hug the 10-day SMA; farther = extended/broken
     MAX_TRIG_DIST_ADR = 1.0  # the breakout trigger must be reachable in one session
+    MIN_TRIG_DIST_ADR = 0.5  # ...but no closer than this, or the buy-stop fires on open
+                             # noise (premature trigger) instead of a real expansion move
     MAX_PULLBACK_PCT = 35.0  # deeper than this = the base has failed, not a flag
     MAX_LOWER_CLOSES = 3     # drop names still falling: >= this many consecutive lower
 
@@ -83,6 +86,11 @@ class QMomentum(ScreenerRanking):
         # they can score.
         lo_i = min(range(hi_i, n), key=lambda i: l[i])
         trigger = max(h[lo_i:])
+        # Floor the trigger a minimum distance above the close: a flag high sitting only
+        # a fraction of an ADR overhead gets tagged by open-auction noise, filling the
+        # buy-stop before any real breakout. Require at least MIN_TRIG_DIST_ADR of room.
+        if adr:
+            trigger = max(trigger, c[-1] * (1 + self.MIN_TRIG_DIST_ADR * adr / 100))
 
         lower_closes = 0                                 # consecutive lower closes from the end
         for i in range(n - 1, 0, -1):
@@ -122,35 +130,32 @@ class QMomentum(ScreenerRanking):
     # -- score ---------------------------------------------------------------
 
     def readiness(self, m):
-        """Coil TIGHTNESS (25) and TRIGGER PROXIMITY (20) dominate — 'ready NOW';
-        pole strength is a minor input (10)."""
+        """Setup QUALITY only, scaled to 100. Coil TIGHTNESS (31) dominates; pole
+        strength is a minor input (13). Trigger distance is NOT scored — it's a hard
+        gate (MIN/MAX_TRIG_DIST_ADR) and a display column, not a quality signal.
+        Rewarding proximity ranked premature-trigger names highest, so it's gone."""
         s = 0
         t = m["range5_over_adr"]
         if t is not None:
-            if t <= 1.5: s += 25
-            elif t <= 2.5: s += 16
-            elif t <= 3.5: s += 6
-        d = m["trig_dist_adr"]
-        if d is not None:
-            if d <= 0.3: s += 20
-            elif d <= 0.6: s += 14
-            elif d <= 1.0: s += 8
+            if t <= 1.5: s += 31
+            elif t <= 2.5: s += 20
+            elif t <= 3.5: s += 8
         cl = m["consol_days"]
-        if 5 <= cl <= 15: s += 15
-        elif 16 <= cl <= 40: s += 10
-        elif 3 <= cl <= 4: s += 6
+        if 5 <= cl <= 15: s += 19
+        elif 16 <= cl <= 40: s += 13
+        elif 3 <= cl <= 4: s += 8
         pb = m["pullback_pct"]
-        if pb <= 15 and m["higher_lows"]: s += 15
-        elif pb <= 25: s += 10
-        elif pb <= 35: s += 4
+        if pb <= 15 and m["higher_lows"]: s += 19
+        elif pb <= 25: s += 13
+        elif pb <= 35: s += 5
         vd = m["vol_dryup"]
         if vd is not None:
-            if vd < 0.7: s += 10
-            elif vd < 1.0: s += 6
+            if vd < 0.7: s += 13
+            elif vd < 1.0: s += 8
         p = m["pole_pct"]
-        if 30 <= p <= 150: s += 10
-        elif p > 150: s += 4
-        elif 20 <= p < 30: s += 6
+        if 30 <= p <= 150: s += 13
+        elif p > 150: s += 5
+        elif 20 <= p < 30: s += 8
         if m["mas_stacked"]: s += 5
         return min(s, 100)
 

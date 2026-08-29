@@ -67,6 +67,7 @@ class ScreenerRanking(abc.ABC):
     def __init__(self, rows=None):
         self.rows = rows or []
         self.survivors = []      # eliminate_losses output (shortlist)
+        self.col_dropped = []    # column pre-filter drops, each with drop_reason
         self.ranked = []         # score output, best-first
         self.dropped = []        # bar-stage drops, each with drop_reason
         self.errors = []         # insufficient-bars etc.
@@ -103,15 +104,17 @@ class ScreenerRanking(abc.ABC):
     def eliminate_losses(self):
         """Cheap column gate over the whole universe -> shortlist worth pulling
         bars for. No bars, no app needed."""
-        keep = []
+        keep, dropped = [], []
         for r in self.rows:
             self.annotate(r)
             reason = self.is_loser(r)
             if reason:
                 r["drop_reason"] = reason
+                dropped.append(r)
             else:
                 keep.append(r)
         self.survivors = keep
+        self.col_dropped = dropped
         return keep
 
     def score(self, bars_map):
@@ -193,10 +196,13 @@ class ScreenerRanking(abc.ABC):
 
     # ==== rendering — shared ==================================================
 
-    def to_markdown(self, date, title, funnel=None):
+    def to_markdown(self, date, title, funnel=None, col_dropped=None):
         """The final ranked report the user consumes. Deterministic numbers only;
-        the qualitative read is authored by the model below this block."""
+        the qualitative read is authored by the model below this block. The full
+        drop ledger is appended so the dated report is a complete record of every
+        name scanned that day — nothing elided."""
         funnel = funnel or {}
+        col_dropped = col_dropped or []
         parts = []
         if funnel.get("universe") is not None:
             parts.append(f"**{funnel['universe']} universe**")
@@ -205,16 +211,48 @@ class ScreenerRanking(abc.ABC):
         parts.append(f"{len(self.ranked)} ranked")
         drops = []
         if self.dropped:
-            names = ", ".join(f"{r['sym'].split(':')[-1]} ({r['drop_reason']})"
-                              for r in self.dropped[:8])
-            drops.append(f"{len(self.dropped)} dropped: {names}"
-                         + (" …" if len(self.dropped) > 8 else ""))
+            drops.append(f"{len(self.dropped)} dropped (bar stage)")
+        if col_dropped:
+            drops.append(f"{len(col_dropped)} filtered (columns)")
         if self.errors:
             drops.append(f"{len(self.errors)} insufficient bars")
         out = [f"## Ranking ({title}) — {date}", "",
-               "Funnel: " + " → ".join(parts) + (" (" + "; ".join(drops) + ")." if drops else "."),
+               "Funnel: " + " → ".join(parts)
+               + ((" (" + "; ".join(drops) + "). See **Dropped** below.") if drops else "."),
                self.SCORE_BLURB, "", self.render_table(self.ranked)]
+        ledger = self.render_dropped(col_dropped)
+        if ledger:
+            out += ["", ledger]
         return "\n".join(out)
+
+    def render_dropped(self, col_dropped=None):
+        """A complete, deterministic ledger of every scanned name that did NOT make
+        the ranked table, so the dated report is a full record of the day. Three
+        buckets, each a Symbol|Reason table (sorted, nothing elided): bar-stage
+        disqualifications, column pre-filter cuts, and names with too few bars."""
+        col_dropped = col_dropped or []
+
+        def table(heading, items, reason_of):
+            if not items:
+                return None
+            rows = sorted(((it["sym"].split(":")[-1], reason_of(it)) for it in items),
+                          key=lambda x: x[0])
+            body = "\n".join(f"| {s} | {why} |" for s, why in rows)
+            return (f"### {heading} ({len(rows)})\n\n"
+                    "| Symbol | Reason |\n|--------|--------|\n" + body)
+
+        sections = [
+            table("Dropped at bar stage — had bars, failed a setup gate",
+                  self.dropped, lambda it: it.get("drop_reason") or "—"),
+            table("Filtered at the column pre-filter — never shortlisted",
+                  col_dropped, lambda it: it.get("drop_reason") or "—"),
+            table("Insufficient bars — couldn't be scored",
+                  self.errors, lambda it: it.get("error") or "insufficient bars"),
+        ]
+        sections = [s for s in sections if s]
+        if not sections:
+            return ""
+        return "## Dropped / not ranked (full ledger)\n\n" + "\n\n".join(sections)
 
     def render_shortlist(self, date, total, title):
         """Phase-1 output: the eliminate_losses survivors (not a ranking)."""
@@ -288,7 +326,9 @@ class ScreenerRanking(abc.ABC):
         os.makedirs(args.outdir, exist_ok=True)
         with open(eng._shortlist_path(args.outdir, slug), "w") as f:
             json.dump({"date": today, "screen": title, "universe": total,
-                       "shortlist": len(eng.survivors), "rows": eng.survivors}, f, indent=2)
+                       "shortlist": len(eng.survivors), "rows": eng.survivors,
+                       "dropped": [{"sym": r["sym"], "drop_reason": r["drop_reason"]}
+                                   for r in eng.col_dropped]}, f, indent=2)
         print(eng.render_shortlist(today, total, title))
         syms = " ".join(r["sym"] for r in eng.survivors)
         print(f"\n{len(eng.survivors)} survive -> pull bars for these, then `rank`:\n{syms}",
@@ -312,7 +352,9 @@ class ScreenerRanking(abc.ABC):
             eng.eliminate_losses()
             with open(eng._shortlist_path(args.outdir, slug), "w") as f:
                 json.dump({"date": today, "screen": title, "universe": total,
-                           "shortlist": len(eng.survivors), "rows": eng.survivors}, f, indent=2)
+                           "shortlist": len(eng.survivors), "rows": eng.survivors,
+                           "dropped": [{"sym": r["sym"], "drop_reason": r["drop_reason"]}
+                                       for r in eng.col_dropped]}, f, indent=2)
             print(f"{title}: {total} universe -> {len(eng.survivors)} shortlist "
                   f"[{eng._shortlist_path(args.outdir, slug)}]")
 
@@ -322,12 +364,14 @@ class ScreenerRanking(abc.ABC):
             bars_map = json.load(f)
         title, date = cls.NAME, datetime.date.today().isoformat()
         universe = shortlist = None
+        col_dropped = []
         if args.scan:
             with open(args.scan) as f:
                 sl = json.load(f)
             title = sl.get("screen", title)
             date = sl.get("date") or date
             universe, shortlist = sl.get("universe"), sl.get("shortlist")
+            col_dropped = sl.get("dropped") or []
         slug = cls.slugify(title)
 
         eng = cls()
@@ -337,12 +381,14 @@ class ScreenerRanking(abc.ABC):
         os.makedirs(args.outdir, exist_ok=True)
         with open(os.path.join(args.outdir, "refined.json"), "w") as f:
             json.dump({"date": date, "screen": title, "ranked": eng.ranked,
-                       "dropped": eng.dropped, "errors": eng.errors}, f, indent=2)
+                       "dropped": eng.dropped, "col_dropped": col_dropped,
+                       "errors": eng.errors}, f, indent=2)
         report = eng._report_path(args.outdir, slug, date)
-        eng.upsert_section(report, eng.to_markdown(date, title, funnel))
+        eng.upsert_section(report, eng.to_markdown(date, title, funnel, col_dropped))
         print(f"Ranked {len(eng.ranked)} ({len(eng.dropped)} dropped, "
-              f"{len(eng.errors)} skipped) -> {os.path.join(args.outdir, 'refined.json')}; "
-              f"table -> {report} (now author the read below the table)")
+              f"{len(col_dropped)} column-filtered, {len(eng.errors)} skipped) -> "
+              f"{os.path.join(args.outdir, 'refined.json')}; "
+              f"table + drop ledger -> {report} (now author the read below the table)")
 
     @staticmethod
     def run_add_screen(args):

@@ -44,23 +44,35 @@ the shortlist, and lists the exact `EXCHANGE:SYM` symbols to pull bars for on st
 
 ### Step 2 — pull bars, then `rank` (the ranking)
 Pull daily bars for **every** shortlist symbol to disk (bars stay out of context).
-Requires a **chart tab open** (open one with `tab_new`/`tv_launch` if needed):
+Requires a **chart tab open** (open one with `tab_new`/`tv_launch` if needed).
+
+⚠️ **`out_path` MUST be an ABSOLUTE path to *this skill's* `out/` dir** — the MCP tool
+resolves relative paths against the MCP server's cwd (the **repo root**), not the
+skill dir, so a bare `out/bars.json` silently writes to `<repo>/out/bars.json` while
+`rank` reads the skill's `out/bars.json` — and you'd rank **stale bars from a prior
+day without any error**. Always write and read the same absolute file:
 ```
-data_get_ohlcv_batch(symbols=[...all shortlist syms...], timeframe="D",
-                     count=60, out_path="out/bars.json")
+data_get_ohlcv_batch(symbols=[...all shortlist syms...], timeframe="D", count=60,
+    out_path="<skill base dir>/out/bars.json")   # the "Base directory for this skill" path
 ```
-Then rank (pass `--scan` so it picks up the screen title/date/funnel and the report
-path):
+Then rank against **that same absolute bars file** (`--scan` picks up the screen
+title/date/funnel and the report path):
 ```
 python3 .claude/skills/qmomentum-scan/qmomentum.py rank \
-    --bars out/bars.json --scan out/qmomentum_<screen>.json --outdir out
+    --bars <skill base dir>/out/bars.json --scan out/qmomentum_<screen>.json --outdir out
 ```
+Sanity-check before trusting the rank: the ranked names must be a subset of the
+Step-1 shortlist. If you see names that weren't in the shortlist, you ranked stale
+bars — re-point `--bars` at the freshly-written absolute file and re-run.
 `rank` writes two files and prints a one-line confirmation (never the table):
-- `out/refined.json` — full ranking: `ranked` (best-first) + `dropped` (each with a
-  `drop_reason`) + `errors`. Also feeds the **tv-orb-alerts** skill (top-N by `score`).
-- `out/qmomentum_<screen>_<date>.md` — the ranked table, folded into a
+- `out/refined.json` — full ranking: `ranked` (best-first) + `dropped` (bar-stage,
+  each with a `drop_reason`) + `col_dropped` (column pre-filter cuts) + `errors`.
+  Also feeds the **tv-orb-alerts** skill (top-N by `score`).
+- `out/qmomentum_<screen>_<date>.md` — the ranked table **plus a full "Dropped / not
+  ranked" ledger** (every scanned name that didn't rank, with its reason — bar-stage
+  drops, column pre-filter cuts, and insufficient-bars), folded into a
   `<!-- rank-table:start -->…<!-- rank-table:end -->` block (a re-run replaces only
-  that block).
+  that block; the model's `## Read` below it is preserved).
 
 ## Then you (the model) author the read
 The table is numbers; the interpretation is the deliverable. After `rank`, read

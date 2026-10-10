@@ -48,6 +48,8 @@ class ScreenerRanking(abc.ABC):
     COLUMNS = ["name", "close", "change", "SMA10", "SMA20", "SMA50", "High.1M", "ADRP"]
     DEFAULT_SORT = {"sortBy": "Perf.1M", "sortOrder": "desc"}
     SCORE_BLURB = "Ranked by `score`. This is the sole ranking."
+    REPORT_HEADING = "Ranking"        # the dated report's section heading
+    RESULT_NOUN = "ranked"            # what the funnel calls the survivors
     MIN_BARS = 30
 
     # Scanner column name -> the key it lands under in each row dict. A superset;
@@ -91,9 +93,18 @@ class ScreenerRanking(abc.ABC):
     def disqualify(self, m):
         """Bar gate. Return a drop-reason string, or None to keep + score."""
 
-    @abc.abstractmethod
     def readiness(self, m):
-        """Score a metric dict 0..100 (higher = readier). This drives the rank."""
+        """Score a metric dict 0..100 (higher = readier). This drives the rank.
+
+        Default 0: an identification scan, whose judgement is entirely the binary
+        `disqualify` gate, has no ranking to express. Such a scan overrides
+        `sort_key` instead, to fix a listing order."""
+        return 0.0
+
+    def sort_key(self, m):
+        """Order survivors for the report. Default: best score first. An
+        identify-only scan overrides it with a neutral ordering."""
+        return -m["score"]
 
     @abc.abstractmethod
     def render_table(self, ranked):
@@ -130,7 +141,7 @@ class ScreenerRanking(abc.ABC):
                 m["drop_reason"] = reason; self.dropped.append(m); continue
             m["score"] = self.readiness(m)
             ranked.append(m)
-        ranked.sort(key=lambda r: -r["score"])
+        ranked.sort(key=self.sort_key)
         self.ranked = ranked
         return ranked
 
@@ -152,6 +163,36 @@ class ScreenerRanking(abc.ABC):
         """Average Daily Range % over the last 20 bars."""
         n = len(c)
         return sum((h[i] - l[i]) / c[i] for i in range(n - 20, n)) / 20 * 100
+
+    # ==== scoring helpers — shared ============================================
+    # Score components are continuous ramps, never step buckets: a bucket ties
+    # everything inside it and swings a component's full weight at its edges.
+
+    @staticmethod
+    def ramp(x, best, worst, pts):
+        """Linear score in [0, pts]: full `pts` at `best`, 0 at `worst`, interpolated
+        between. Works in either direction — pass best < worst when lower is better."""
+        if x is None:
+            return 0.0
+        if best < worst:                      # lower is better
+            if x <= best: return float(pts)
+            if x >= worst: return 0.0
+            return pts * (worst - x) / (worst - best)
+        if x >= best: return float(pts)       # higher is better
+        if x <= worst: return 0.0
+        return pts * (x - worst) / (best - worst)
+
+    @staticmethod
+    def plateau(x, zero_lo, full_lo, full_hi, zero_hi, pts):
+        """Linear score in [0, pts] for a metric with an optimal MIDDLE band: full
+        `pts` across [full_lo, full_hi], ramping to 0 at zero_lo / zero_hi."""
+        if x is None:
+            return 0.0
+        if full_lo <= x <= full_hi: return float(pts)
+        if x <= zero_lo or x >= zero_hi: return 0.0
+        if x < full_lo:
+            return pts * (x - zero_lo) / (full_lo - zero_lo)
+        return pts * (zero_hi - x) / (zero_hi - full_hi)
 
     # ==== fetch — shared ======================================================
 
@@ -208,7 +249,7 @@ class ScreenerRanking(abc.ABC):
             parts.append(f"**{funnel['universe']} universe**")
         if funnel.get("shortlist") is not None:
             parts.append(f"{funnel['shortlist']} shortlist")
-        parts.append(f"{len(self.ranked)} ranked")
+        parts.append(f"{len(self.ranked)} {self.RESULT_NOUN}")
         drops = []
         if self.dropped:
             drops.append(f"{len(self.dropped)} dropped (bar stage)")
@@ -216,7 +257,7 @@ class ScreenerRanking(abc.ABC):
             drops.append(f"{len(col_dropped)} filtered (columns)")
         if self.errors:
             drops.append(f"{len(self.errors)} insufficient bars")
-        out = [f"## Ranking ({title}) — {date}", "",
+        out = [f"## {self.REPORT_HEADING} ({title}) — {date}", "",
                "Funnel: " + " → ".join(parts)
                + ((" (" + "; ".join(drops) + "). See **Dropped** below.") if drops else "."),
                self.SCORE_BLURB, "", self.render_table(self.ranked)]

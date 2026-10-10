@@ -13,9 +13,11 @@ judgement:
   * eliminate_losses (columns): drop below-50SMA / stretched >1 ADR from the 10SMA.
   * score (bars): the flag whose high is in the PAST — pole from the swing high,
     consolidation length since it, pullback depth, and a breakout trigger at the
-    top of the flag off the pullback low. Scored on setup quality — coil tightness
-    dominates; pole strength is a minor input. Trigger distance is a hard gate, not
-    a score input (rewarding proximity ranked premature-trigger names highest).
+    top of the flag off the pullback low. Scored on setup quality via continuous
+    ramps, led by volume dry-up and flag position: a coil is defined by supply
+    drying up and price holding the top of the flag, NOT by narrowness alone (a
+    quiet bleed is narrow too). Trigger distance is a hard gate, not a score input
+    (rewarding proximity ranked premature-trigger names highest).
 
   python3 qmomentum.py scan --screen screens/<s>.json --outdir out
   <model> data_get_ohlcv_batch(symbols=shortlist) -> out/bars.json
@@ -32,8 +34,14 @@ class QMomentum(ScreenerRanking):
     COLUMNS = ["name", "close", "change", "Perf.1M", "Perf.3M",
                "SMA10", "SMA20", "SMA50", "High.1M", "ADRP"]
     DEFAULT_SORT = {"sortBy": "Perf.1M", "sortOrder": "desc"}
-    SCORE_BLURB = ("Ranked by `score` — bar-derived setup quality (coil tightness "
-                   "dominates; trigger distance is a gate, not scored). This is the sole ranking.")
+    SCORE_BLURB = ("Ranked by `score` — bar-derived setup quality on continuous ramps: "
+                   "`VolDry` (26) > `FlagPos` (22) > tightness (`5d/ADR` 20) "
+                   "> `Pull%` (12) > `Consol` length (12) > `Pole%` (8). Trigger distance "
+                   "and 10/20/50 SMA stacking are gates, not score inputs — a hard binary "
+                   "belongs in `disqualify`. `VolDry` = recent volume ÷ its 20-day average "
+                   "(lower = drier); `FlagPos` = where the close sits in the flag's own "
+                   "range (1 = at the flag high). Every metric column is a score input — "
+                   "headers are the metric keys in `refined.json`. This is the sole ranking.")
 
     MAX_S10_DIST_ADR = 1.0   # a coil must hug the 10-day SMA; farther = extended/broken
     MAX_TRIG_DIST_ADR = 1.0  # the breakout trigger must be reachable in one session
@@ -41,6 +49,10 @@ class QMomentum(ScreenerRanking):
                              # noise (premature trigger) instead of a real expansion move
     MAX_PULLBACK_PCT = 35.0  # deeper than this = the base has failed, not a flag
     MAX_LOWER_CLOSES = 3     # drop names still falling: >= this many consecutive lower
+    MIN_CONSOL_DAYS = 3      # a flag needs its high in the PAST. At 0-2 bars since the
+                             # swing high there is no coil to break out of: the name is
+                             # printing new highs (a breakout-scan setup, not this one)
+                             # and its "trigger" would be the synthetic MIN_TRIG floor.
 
     # -- column gate ---------------------------------------------------------
 
@@ -63,8 +75,8 @@ class QMomentum(ScreenerRanking):
         return None
 
     # -- bar metrics ---------------------------------------------------------
-
     def bar_metrics(self, sym, bars):
+        """Flag geometry off the daily bars."""
         if not bars or len(bars) < self.MIN_BARS:
             return {"sym": sym, "error": "insufficient bars"}
         h, l, c, v = self.ohlcv(bars)
@@ -78,18 +90,9 @@ class QMomentum(ScreenerRanking):
         since_low = min(c[hi_i:]) if hi_i < n else c[-1]
         pullback = (c[hi_i] - since_low) / c[hi_i] * 100           # deepest closing drawdown
 
-        # Trigger = top of the flag that formed off the pullback low: the high since
-        # the deepest low AFTER the swing-high close. Emulates buying the break of the
-        # recent contraction (à la Qullamaggie). No special geometry guard is needed:
-        # the only names whose trigger would "collapse" onto the last bar are ones still
-        # pressing lower, and disqualify() drops those on the lower-close streak before
-        # they can score.
-        lo_i = min(range(hi_i, n), key=lambda i: l[i])
-        trigger = max(h[lo_i:])
-        # Floor the trigger a minimum distance above the close: a flag high sitting only
-        # a fraction of an ADR overhead gets tagged by open-auction noise, filling the
-        # buy-stop before any real breakout. Require at least MIN_TRIG_DIST_ADR of room.
-        if adr:
+        lo_i = min(range(hi_i, n), key=lambda i: l[i])             # pullback low after the high
+        trigger = max(h[lo_i:])                                    # top of the flag off that low
+        if adr:                                                    # floored MIN_TRIG_DIST_ADR up
             trigger = max(trigger, c[-1] * (1 + self.MIN_TRIG_DIST_ADR * adr / 100))
 
         lower_closes = 0                                 # consecutive lower closes from the end
@@ -101,10 +104,14 @@ class QMomentum(ScreenerRanking):
         trig_dist_adr = (trigger - c[-1]) / c[-1] / (adr / 100) if adr else None
 
         rng5 = (max(h[-5:]) - min(l[-5:])) / c[-1] * 100
-        tight = rng5 / adr if adr else None                       # 5-day range as x ADR (lower=tighter)
-        rolling_over = c[-1] < c[-2] < c[-3]
-        hl = (min(c[-5:]) > min(c[-10:-5]) and not rolling_over) if n >= 10 else None
-        vdry = (sum(v[-5:]) / 5) / (sum(v[-20:]) / 20) if sum(v[-20:]) else None
+        tight = rng5 / adr if adr else None                        # 5-day envelope as x ADR
+        vavg = sum(v[-20:]) / 20
+        vd5 = (sum(v[-5:]) / 5) / vavg if vavg else None
+        vd3 = (sum(v[-3:]) / 3) / vavg if vavg else None
+        vdry = min(vd5, vd3) if (vd5 is not None and vd3 is not None) else vd5
+
+        seg_h, seg_l = max(h[hi_i:]), min(l[hi_i:])                # the flag's own range
+        flag_pos = (c[-1] - seg_l) / (seg_h - seg_l) if seg_h > seg_l else 0.5
         stacked = self.sma(c, 10) > self.sma(c, 20) > self.sma(c, 50)
 
         return {
@@ -112,13 +119,20 @@ class QMomentum(ScreenerRanking):
             "pole_pct": round(pole, 1), "consol_days": consol_len,
             "pullback_pct": round(pullback, 1),
             "range5_over_adr": round(tight, 2) if tight else None,
-            "higher_lows": hl, "vol_dryup": round(vdry, 2) if vdry else None,
+            "vol_dryup": round(vdry, 2) if vdry else None,
+            "vol_dryup_5d": round(vd5, 2) if vd5 else None,
+            "flag_pos": round(flag_pos, 2),
             "mas_stacked": stacked, "trigger": round(trigger, 2),
             "trig_dist_adr": round(trig_dist_adr, 2) if trig_dist_adr is not None else None,
             "lower_closes": lower_closes,
         }
 
     def disqualify(self, m):
+        if m["consol_days"] < self.MIN_CONSOL_DAYS:
+            return (f"no flag yet ({m['consol_days']}d since the high) — "
+                    "at/near highs, see breakout-scan")
+        if not m["mas_stacked"]:
+            return "10/20/50 SMA not stacked"
         if m["pullback_pct"] > self.MAX_PULLBACK_PCT:
             return f"pullback {m['pullback_pct']:.0f}% (base failed)"
         if m["lower_closes"] >= self.MAX_LOWER_CLOSES:
@@ -130,51 +144,43 @@ class QMomentum(ScreenerRanking):
     # -- score ---------------------------------------------------------------
 
     def readiness(self, m):
-        """Setup QUALITY only, scaled to 100. Coil TIGHTNESS (31) dominates; pole
-        strength is a minor input (13). Trigger distance is NOT scored — it's a hard
-        gate (MIN/MAX_TRIG_DIST_ADR) and a display column, not a quality signal.
-        Rewarding proximity ranked premature-trigger names highest, so it's gone."""
-        s = 0
-        t = m["range5_over_adr"]
-        if t is not None:
-            if t <= 1.5: s += 31
-            elif t <= 2.5: s += 20
-            elif t <= 3.5: s += 8
-        cl = m["consol_days"]
-        if 5 <= cl <= 15: s += 19
-        elif 16 <= cl <= 40: s += 13
-        elif 3 <= cl <= 4: s += 8
-        pb = m["pullback_pct"]
-        if pb <= 15 and m["higher_lows"]: s += 19
-        elif pb <= 25: s += 13
-        elif pb <= 35: s += 5
-        vd = m["vol_dryup"]
-        if vd is not None:
-            if vd < 0.7: s += 13
-            elif vd < 1.0: s += 8
-        p = m["pole_pct"]
-        if 30 <= p <= 150: s += 13
-        elif p > 150: s += 5
-        elif 20 <= p < 30: s += 8
-        if m["mas_stacked"]: s += 5
-        return min(s, 100)
+        s = 0.0
+        # supply exhaustion — the drier of the 5/3-bar windows
+        s += self.ramp(m["vol_dryup"], 0.20, 1.00, 26)
+        # coil tightness: the 5-day envelope as a multiple of ADR. Deliberately the
+        # only tightness term — mean bar range is bounded above by the envelope
+        # (envelope >= largest bar >= mean bar), so scoring it too charges twice
+        # for the same looseness and moved nothing in the top of the ranking.
+        s += self.ramp(m["range5_over_adr"], 1.3, 3.2, 20)
+        # closing strength: where the close sits in the flag's own range
+        s += self.ramp(m["flag_pos"], 0.80, 0.20, 22)
+        # pullback depth — SHALLOWER IS BETTER (ramp takes best first):
+        # full credit at <=5%, zero by 28%. Independent of consol_days, which
+        # says the high is in the past but nothing about whether the flag held.
+        s += self.ramp(m["pullback_pct"], 5.0, 28.0, 12)
+        # consolidation length: 5-20 bars is the sweet spot
+        s += self.plateau(m["consol_days"], 1, 5, 20, 45, 12)
+        # pole: a real thrust to continue, not a moonshot to fade
+        s += self.plateau(m["pole_pct"], 12, 30, 150, 260, 8)
+        return round(min(s, 100))
 
     # -- report table --------------------------------------------------------
 
     def render_table(self, ranked):
+        # Column headers are the metric keys, so a number in the report can be traced
+        # straight to the field in refined.json and the term in readiness().
         out = ["| # | Symbol | Score | Close | Trigger | Δtrig | Stop~ | ADR% | Pole% | "
-               "Consol | Pull% | 5d/ADR | HL | VolDry | Stacked |",
+               "Consol | Pull% | 5d/ADR | VolDry | FlagPos |",
                "|--:|--------|------:|------:|--------:|------:|------:|-----:|------:|"
-               "-------:|------:|-------:|:--:|-------:|:------:|"]
+               "-------:|------:|-------:|-------:|--------:|"]
         for i, r in enumerate(ranked, 1):
             adr = r.get("adr_pct"); trig = r.get("trigger"); dist = r.get("trig_dist_adr")
             stop = round(trig * (1 - adr / 100), 2) if (trig and adr) else None  # ~1 ADR below entry
-            out.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+            out.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                 i, r["sym"].split(":")[-1], r["score"], r.get("close"), trig,
                 "—" if dist is None else f"{dist:.1f}", stop if stop is not None else "—",
                 adr, r.get("pole_pct"), r.get("consol_days"), r.get("pullback_pct"),
-                r.get("range5_over_adr"), "✓" if r.get("higher_lows") else "·",
-                r.get("vol_dryup"), "✓" if r.get("mas_stacked") else "·"))
+                r.get("range5_over_adr"), r.get("vol_dryup"), r.get("flag_pos")))
         return "\n".join(out)
 
 

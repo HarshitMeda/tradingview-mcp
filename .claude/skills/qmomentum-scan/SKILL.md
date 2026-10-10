@@ -101,5 +101,10 @@ ranked, plus what dropped) — and point the user at the dated report for the ta
 - Run after the close (or near it) — the scanner's snapshot fields update intraday.
 - `data_get_ohlcv_batch` drives the open chart and restores it; it reads the internal
   bar model, not the gated `exportData`.
-- **breakout-scan** is the sibling scan on the same base (a coil AT the 3M high). To
-  add a new scan, subclass `ScreenerRanking` — see `_lib/screener_ranking.py`.
+- **breakout-scan** is the mirror-image sibling on the same base: it identifies
+  names whose pivot is already TAKEN and holding (binary, no ranking), where this
+  scan wants the high still in the PAST and price coiled under it. Names dropped
+  here as "no flag yet (at/near highs)" are candidates for it — but check they're
+  actually near the high first: that gate measures bars since the highest *close*,
+  so it also catches names that spiked and reversed hard, which belong to neither
+  scan. To add a new scan, subclass `ScreenerRanking` — see `_lib/screener_ranking.py`.

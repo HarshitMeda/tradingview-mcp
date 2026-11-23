@@ -11,6 +11,16 @@ export function registerDataTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
+  server.tool('data_get_ohlcv_batch', 'Fetch OHLCV bars for MANY symbols in one call by driving the chart symbol-by-symbol. Reads the internal bar model (works without the paid exportData feature) and restores the original chart symbol when done. Pass out_path to write bars to disk as {"SYMBOL":[[time,open,high,low,close,volume],...]} and keep them OUT of context (recommended for large scans); omit it to return bars inline. Requires a chart tab open.', {
+    symbols: z.array(z.string()).describe('Symbols to fetch, e.g. ["NSE:PAISALO","NSE:AMAGI"] or ["AAPL","MSFT"]'),
+    timeframe: z.string().optional().describe('Resolution (default "D"). e.g. "1","5","15","60","D","W"'),
+    count: z.coerce.number().optional().describe('Bars per symbol (max 500, default 100)'),
+    out_path: z.string().optional().describe('If set, write bars JSON to this file path and return only a summary (bars stay out of context). If omitted, bars are returned inline.'),
+  }, async ({ symbols, timeframe, count, out_path }) => {
+    try { return jsonResult(await core.getOhlcvBatch({ symbols, timeframe, count, out_path })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('data_get_indicator', 'Get indicator/study info and input values', {
     entity_id: z.string().describe('Study entity ID (from chart_get_state)'),
   }, async ({ entity_id }) => {

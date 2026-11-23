@@ -3,6 +3,8 @@
  */
 import { evaluate, evaluateAsync, KNOWN_PATHS, safeString } from '../connection.js';
 import { waitForChartReady } from '../wait.js';
+import { writeFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 const MAX_OHLCV_BARS = 500;
 const MAX_TRADES = 20;
@@ -179,6 +181,127 @@ export async function getOhlcv({ count, summary } = {}) {
   }
 
   return { success: true, bar_count: data.bars.length, total_available: data.total_bars, source: data.source, bars: data.bars };
+}
+
+// Multi-symbol bar fetcher. Drives the live chart symbol-by-symbol, reads bars
+// from the internal mainSeries().bars() model (NOT the gated exportData), and
+// either writes them to disk (out_path — bars never enter the model's context)
+// or returns them inline. Restores the chart's original symbol/resolution when
+// done. Exposed as the `ohlcv-batch` CLI command, which tv-scan-cron uses for
+// its bar pull.
+export async function getOhlcvBatch({ symbols, timeframe, count, out_path } = {}) {
+  const syms = (symbols || []).map(s => String(s).trim()).filter(Boolean);
+  if (!syms.length) throw new Error('Pass at least one symbol.');
+  const tf = timeframe || 'D';
+  const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+  const api = CHART_API;
+
+  // Read the bars AND the identity of the series they came from, in one atomic
+  // evaluate. mainSeries().symbolInfo() is the symbol the loaded DATA belongs to,
+  // which is NOT the same thing as api.symbol() — see waitReady below.
+  const readBars = async () => evaluate(`
+    (function() {
+      var series = null, seriesSym = null;
+      try {
+        series = ${api}._chartWidget.model().mainSeries();
+        var si = series.symbolInfo();
+        seriesSym = si && (si.full_name || si.name) || null;
+      } catch (e) {}
+      var bars = ${BARS_PATH};
+      if (!bars || typeof bars.lastIndex !== 'function') return { seriesSym: seriesSym, bars: [] };
+      var out = [], end = bars.lastIndex();
+      var start = Math.max(bars.firstIndex(), end - ${limit} + 1);
+      for (var i = start; i <= end; i++) {
+        var v = bars.valueAt(i);
+        if (v) out.push([v[0], v[1], v[2], v[3], v[4], v[5] || 0]);
+      }
+      return { seriesSym: seriesSym, bars: out };
+    })()
+  `);
+
+  // Confirm the switch from the real API, not the DOM: TradingView rewrites the
+  // exchange prefix (setSymbol("AAPL") → api.symbol() "BATS:AAPL") and the legend
+  // DOM node isn't reliably present under CDP, so we match on the ticker (part
+  // after ":").
+  //
+  // CRITICAL: poll mainSeries().symbolInfo(), NOT api.symbol(). api.symbol()
+  // reports the symbol that was *requested* — it updates the instant setSymbol
+  // is called, even when the data feed never reloads. Observed 2026-10-25 on the
+  // VM: a stalled feed left the chart serving NSE:CNX500 bars while api.symbol()
+  // happily returned "NSE:INFY" and chart_ready stayed false for 60s+. The old
+  // size-stability check made that *worse*, because a series that never reloads
+  // is trivially stable — so every symbol in a 23-name scan silently received
+  // the index's bars and the batch reported `fetched: 23, failed: []`.
+  // symbolInfo() is the identity of the series actually holding the bars, so a
+  // stalled feed now times out and lands in `failed` where it belongs.
+  const tickerOf = (s) => String(s).split(':').pop().toUpperCase();
+  const waitReady = async (sym, timeoutMs = 12000) => {
+    const want = tickerOf(sym);
+    const start = Date.now();
+    let last = -1, stable = 0;
+    await new Promise(r => setTimeout(r, 400)); // let the series begin swapping
+    while (Date.now() - start < timeoutMs) {
+      const info = await evaluate(`(function(){
+        try {
+          var s = ${api}._chartWidget.model().mainSeries();
+          var si = s.symbolInfo();
+          var b = ${BARS_PATH};
+          return { sym: si && (si.full_name || si.name) || null,
+                   n: (b && typeof b.size === 'function') ? b.size() : 0 };
+        } catch(e){ return { sym: null, n: 0 }; }
+      })()`);
+      if (info && info.sym && tickerOf(info.sym) === want && info.n > 0) {
+        if (info.n === last) { if (++stable >= 2) return true; }
+        else stable = 0;
+        last = info.n;
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    return false;
+  };
+
+  const original = await evaluate(`${api}.symbol()`);
+  const bars = {};
+  const failed = [];
+
+  for (const sym of syms) {
+    try {
+      await evaluate(`${api}.setSymbol(${safeString(sym)}); ${api}.setResolution(${safeString(tf)}, {});`);
+      const ready = await waitReady(sym);
+      if (!ready) { failed.push({ symbol: sym, reason: 'timeout / series symbol never confirmed (stalled feed?)' }); continue; }
+      const r = await readBars();
+      const b = r && r.bars;
+      if (!b || !b.length) { failed.push({ symbol: sym, reason: 'no bars' }); continue; }
+      // Re-verify after the read, not just before it: the series could swap
+      // between waitReady and readBars, which would attribute one symbol's bars
+      // to another. Cheap, and the failure it prevents is invisible downstream.
+      if (r.seriesSym && tickerOf(r.seriesSym) !== tickerOf(sym)) {
+        failed.push({ symbol: sym, reason: `series held ${r.seriesSym} at read time, not ${sym}` });
+        continue;
+      }
+      bars[sym] = b;
+    } catch (err) {
+      failed.push({ symbol: sym, reason: err.message });
+    }
+  }
+
+  // Restore the user's chart.
+  try { if (original) await evaluate(`${api}.setSymbol(${safeString(original)})`); } catch {}
+
+  const ok = Object.keys(bars).length;
+  const columns = ['time', 'open', 'high', 'low', 'close', 'volume'];
+
+  if (out_path) {
+    mkdirSync(dirname(out_path), { recursive: true });
+    writeFileSync(out_path, JSON.stringify(bars));
+    return {
+      success: true, timeframe: tf, bars_per_symbol: limit, columns,
+      fetched: ok, requested: syms.length, failed,
+      out_path, note: 'Bars written to disk (not returned in context). Shape: { "SYMBOL": [[time,open,high,low,close,volume], ...] }',
+    };
+  }
+
+  return { success: true, timeframe: tf, bars_per_symbol: limit, columns, fetched: ok, requested: syms.length, failed, bars };
 }
 
 export async function getIndicator({ entity_id }) {

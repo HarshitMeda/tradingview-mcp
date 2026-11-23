@@ -18,6 +18,38 @@ register('ohlcv', {
   }),
 });
 
+register('ohlcv-batch', {
+  description: 'Fetch OHLCV bars for MANY symbols, written to disk (drives the chart symbol-by-symbol)',
+  options: {
+    timeframe: { type: 'string', short: 't', description: 'Resolution (default D)' },
+    count: { type: 'string', short: 'n', description: 'Bars per symbol (default 100, max 500)' },
+    out: { type: 'string', short: 'o', description: 'ABSOLUTE path to write {"SYM":[[t,o,h,l,c,v],...]}' },
+    'symbols-file': { type: 'string', short: 'f', description: 'File of symbols (whitespace/comma/newline separated)' },
+  },
+  handler: async (opts, positionals) => {
+    // Symbols come from positionals and/or a file — a shortlist can run to 50+
+    // names, so the file form keeps callers off the shell's argument limits.
+    const symbols = [...positionals];
+    if (opts['symbols-file']) {
+      const { readFileSync } = await import('node:fs');
+      symbols.push(...readFileSync(opts['symbols-file'], 'utf8').split(/[\s,]+/));
+    }
+    const result = await core.getOhlcvBatch({
+      symbols,
+      timeframe: opts.timeframe,
+      count: opts.count ? Number(opts.count) : undefined,
+      out_path: opts.out,
+    });
+    // Partial failures stay in `failed` for the caller to judge; a total miss is
+    // an error, so an unattended run exits non-zero instead of ranking nothing.
+    if (!result.fetched) {
+      throw new Error(`No bars fetched for any of ${result.requested} symbol(s): ` +
+        JSON.stringify(result.failed?.slice(0, 5) || []));
+    }
+    return result;
+  },
+});
+
 register('values', {
   description: 'Get current indicator values from data window',
   handler: () => core.getStudyValues(),
